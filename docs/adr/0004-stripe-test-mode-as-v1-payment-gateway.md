@@ -1,0 +1,5 @@
+# Stripe test mode as the v1 payment gateway
+
+We integrate `PaymentGatewayClient`'s real adapter against Stripe, in test mode, as the single sandboxed gateway behind the interface. Every prior source document (`product-prd.md`, `product-design.md`) specifies "one real gateway (sandbox/test mode)" but never names a provider — this ADR fills that gap rather than leaving the choice implicit in whichever adapter code happens to get written first.
+
+Stripe was chosen over Braintree, Adyen, or Checkout.com for its well-documented test-card matrix (deterministic success/decline/dispute test cards, no separate sandbox account provisioning flow to script around), a standard HMAC-based webhook signature scheme, and broad familiarity — all of which lower the friction of building both the real adapter and the WireMock stub that replicates its API shape. Per Risk R5 and this spec's own framing, `PaymentGatewayClient` exists specifically so this choice is swappable later; picking Stripe now does not foreclose a second provider, it only decides what v1 actually calls.
