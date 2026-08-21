@@ -12,5 +12,12 @@ spring:
   flyway:
     enabled: true
 
+billing:
+  security:
+    jwt:
+      # Dev-only fallback baked into JwtProperties itself; override via this env var in
+      # every real environment (same convention as this file's DB_PASSWORD default).
+      secret: ${JWT_SECRET:dev-only-jwt-signing-secret-override-with-JWT_SECRET-env-var-in-every-real-environment}
+
 server:
   port: ${SERVER_PORT:8080}

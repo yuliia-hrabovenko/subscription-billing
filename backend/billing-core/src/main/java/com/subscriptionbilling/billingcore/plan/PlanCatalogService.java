@@ -52,21 +52,45 @@ public class PlanCatalogService {
             return List.of();
         }
 
-        Instant now = Instant.now(clock);
-        // One query for the whole catalog instead of one per Plan: the catalog is small
-        // today, but a public, unauthenticated, likely-high-traffic endpoint shouldn't
-        // scale its query count with the number of Plans on offer.
-        Map<UUID, PriceVersion> currentPriceByPlanId = priceVersionRepository
+        Map<UUID, PriceVersion> currentPriceByPlanId = currentPricesByPlanId(plans, Instant.now(clock));
+
+        return plans.stream()
+                .flatMap(plan -> toSummary(plan, currentPriceByPlanId).stream())
+                .toList();
+    }
+
+    /**
+     * A single Plan, subject to the exact same signup-eligibility rule {@link
+     * #listAvailablePlans()} applies to the whole catalog (not retired, has a current
+     * price) — so a Plan absent from the public listing can never be selected directly
+     * by ID either. Collapses "doesn't exist," "retired," and "no PriceVersion yet" into
+     * one empty result: from a signup request's point of view they're the same outcome.
+     *
+     * <p>Reuses {@link #currentPricesByPlanId}/{@link #toSummary} rather than its own
+     * "which PriceVersion is current" query, so this and {@link #listAvailablePlans()}
+     * can never resolve a Plan's current price differently from each other.
+     */
+    public Optional<PlanSummary> findAvailablePlan(UUID planId) {
+        Plan plan = planRepository.findById(planId).orElse(null);
+        if (plan == null || plan.isRetiredForSignup()) {
+            return Optional.empty();
+        }
+        return toSummary(plan, currentPricesByPlanId(List.of(plan), Instant.now(clock)));
+    }
+
+    /**
+     * One query for the whole batch instead of one per Plan: the catalog is small today,
+     * but a public, unauthenticated, likely-high-traffic endpoint shouldn't scale its
+     * query count with the number of Plans on offer.
+     */
+    private Map<UUID, PriceVersion> currentPricesByPlanId(List<Plan> plans, Instant now) {
+        return priceVersionRepository
                 .findByPlanIdInAndEffectiveFromLessThanEqual(plans.stream().map(Plan::getId).toList(), now)
                 .stream()
                 .collect(Collectors.toMap(
                         priceVersion -> priceVersion.getPlan().getId(),
                         Function.identity(),
                         (a, b) -> a.getEffectiveFrom().isAfter(b.getEffectiveFrom()) ? a : b));
-
-        return plans.stream()
-                .flatMap(plan -> toSummary(plan, currentPriceByPlanId).stream())
-                .toList();
     }
 
     private Optional<PlanSummary> toSummary(Plan plan, Map<UUID, PriceVersion> currentPriceByPlanId) {
