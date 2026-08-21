@@ -23,6 +23,7 @@
     </properties>
 
     <modules>
+        <module>audit</module>
         <module>billing-core</module>
         <module>notifications</module>
         <module>api</module>

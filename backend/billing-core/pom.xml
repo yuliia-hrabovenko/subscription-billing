@@ -13,7 +13,7 @@
     <packaging>jar</packaging>
 
     <name>billing-core</name>
-    <description>Subscription/Plan/PriceVersion/AuditLogEntry domain model, persistence, and idempotency infrastructure</description>
+    <description>Subscription/Plan/PriceVersion domain model, persistence, and idempotency infrastructure</description>
 
     <dependencies>
         <dependency>
