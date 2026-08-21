@@ -1,6 +1,6 @@
 package com.subscriptionbilling.api;
 
-import com.subscriptionbilling.billingcore.support.AbstractPostgresIntegrationTest;
+import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 

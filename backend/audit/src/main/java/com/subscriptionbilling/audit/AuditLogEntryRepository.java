@@ -2,6 +2,7 @@ package com.subscriptionbilling.audit;
 
 import org.springframework.data.repository.Repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -14,4 +15,7 @@ import java.util.UUID;
 public interface AuditLogEntryRepository extends Repository<AuditLogEntry, UUID>, AuditLogEntryRepositoryCustom {
 
     Optional<AuditLogEntry> findById(UUID id);
+
+    /** Reconstructs a Subscription's transition history. */
+    List<AuditLogEntry> findBySubscriptionId(UUID subscriptionId);
 }
