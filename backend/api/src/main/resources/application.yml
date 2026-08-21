@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: api
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:subscription_billing}
+    username: ${DB_USERNAME:subscription_billing}
+    password: ${DB_PASSWORD:subscription_billing}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+
+server:
+  port: ${SERVER_PORT:8080}
