@@ -24,6 +24,7 @@
 
     <modules>
         <module>billing-core</module>
+        <module>notifications</module>
         <module>api</module>
     </modules>
 
