@@ -4,8 +4,9 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 
 /**
- * Spring Data discovers this class by naming convention ({@code <RepositoryName>Impl})
- * and wires it in as the implementation for {@link AuditLogEntryRepositoryCustom}.
+ * Custom repository implementation for the append-only audit log.
+ * Uses EntityManager.persist() rather than Spring Data save() to ensure
+ * the repository has no update semantics.
  */
 class AuditLogEntryRepositoryImpl implements AuditLogEntryRepositoryCustom {
 
