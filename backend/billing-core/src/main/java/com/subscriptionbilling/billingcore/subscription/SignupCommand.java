@@ -10,21 +10,15 @@ import java.util.UUID;
  *
  * @param planId             the Plan being signed up for
  * @param email              used to mint a brand-new Customer when {@code
- *                           existingCustomerId} is null; accepted but ignored otherwise
+ *                           existingCustomerId} is null; ignored otherwise
  * @param existingCustomerId null for a brand-new Customer, or the Customer identified
- *                           by a bearer token presented at signup — the one case a
- *                           re-subscribing Customer attaches a new Subscription to
- *                           their existing Customer record instead of minting a second
- *                           one
- * @param useTrial           true to enter a Trial instead of being charged immediately;
- *                           ignored for a free-Plan signup, which has no Trial concept
- * @param paymentMethodToken a gateway-provided card reference, required whenever the
- *                           target Plan is paid (Trial or immediate-paid) and ignored
- *                           for a free-Plan signup
- * @param correlationId      rides along so the {@link com.subscriptionbilling.audit.AuditLogEntry}
- *                           this signup writes can be cross-referenced with the
- *                           request's structured logs and traces, same as every other
- *                           audited write
+ *                           by a bearer token presented at signup (a re-subscribing
+ *                           Customer)
+ * @param useTrial           ignored for a free-Plan signup, which has no Trial concept
+ * @param paymentMethodToken required whenever the target Plan is paid; ignored for a
+ *                           free-Plan signup
+ * @param correlationId      rides along on the {@link com.subscriptionbilling.audit.AuditLogEntry}
+ *                           this signup writes
  */
 public record SignupCommand(UUID planId, String email, UUID existingCustomerId, boolean useTrial,
                              String paymentMethodToken, String correlationId) {

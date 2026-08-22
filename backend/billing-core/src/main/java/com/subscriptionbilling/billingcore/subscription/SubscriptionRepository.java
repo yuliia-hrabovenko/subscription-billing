@@ -7,9 +7,7 @@ import java.util.UUID;
 public interface SubscriptionRepository extends JpaRepository<Subscription, UUID> {
 
     /**
-     * Backs Invariant 1's application-layer check (a Customer has at most one
-     * non-{@code canceled} Subscription at a time): true if the Customer has any
-     * Subscription whose state isn't {@code excludedState}. Passing {@link
+     * Backs Invariant 1's application-layer check. Passing {@link
      * SubscriptionState#CANCELED} as {@code excludedState} is what makes a Customer
      * whose only prior Subscription is {@code canceled} free to sign up again.
      *

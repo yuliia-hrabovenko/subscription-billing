@@ -4,9 +4,13 @@ import com.subscriptionbilling.billingcore.plan.PlanUnavailableForSignupExceptio
 import com.subscriptionbilling.billingcore.subscription.DuplicateSubscriptionException;
 import com.subscriptionbilling.billingcore.subscription.PaymentMethodRequiredException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionAccessDeniedException;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionAlreadyCanceledException;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionAlreadyPendingCancellationException;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionNotPendingCancellationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -62,9 +66,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Invariant 10: a retired (or otherwise unselectable) Plan is a conflict between the
-     * request and the Plan's current state, not a malformed request — so this is a 409,
-     * consistent with {@link #handleDuplicateSubscription} below.
+     * A retired (or otherwise unselectable) Plan is a conflict with the Plan's current
+     * state, not a malformed request — 409, consistent with {@link
+     * #handleDuplicateSubscription} below.
      */
     @ExceptionHandler(PlanUnavailableForSignupException.class)
     public ResponseEntity<Object> handlePlanUnavailableForSignup(PlanUnavailableForSignupException ex) {
@@ -72,10 +76,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Invariant 1: the identified Customer already has a non-{@code canceled}
-     * Subscription. A dedicated 409 with its own code, distinct from the generic {@link
-     * #handleDataIntegrityViolation} fallback below, which exists only for the race this
-     * application-layer check can't catch.
+     * A dedicated 409, distinct from the generic {@link #handleDataIntegrityViolation}
+     * fallback below, which exists only for the race this application-layer check
+     * can't catch.
      */
     @ExceptionHandler(DuplicateSubscriptionException.class)
     public ResponseEntity<Object> handleDuplicateSubscription(DuplicateSubscriptionException ex) {
@@ -85,6 +88,23 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(PaymentMethodRequiredException.class)
     public ResponseEntity<Object> handlePaymentMethodRequired(PaymentMethodRequiredException ex) {
         return respond(HttpStatus.BAD_REQUEST, "PAYMENT_METHOD_REQUIRED", ex.getMessage());
+    }
+
+    @ExceptionHandler(SubscriptionAlreadyCanceledException.class)
+    public ResponseEntity<Object> handleSubscriptionAlreadyCanceled(SubscriptionAlreadyCanceledException ex) {
+        return respond(HttpStatus.CONFLICT, "SUBSCRIPTION_ALREADY_CANCELED", ex.getMessage());
+    }
+
+    @ExceptionHandler(SubscriptionAlreadyPendingCancellationException.class)
+    public ResponseEntity<Object> handleSubscriptionAlreadyPendingCancellation(
+            SubscriptionAlreadyPendingCancellationException ex) {
+        return respond(HttpStatus.CONFLICT, "SUBSCRIPTION_ALREADY_PENDING_CANCELLATION", ex.getMessage());
+    }
+
+    @ExceptionHandler(SubscriptionNotPendingCancellationException.class)
+    public ResponseEntity<Object> handleSubscriptionNotPendingCancellation(
+            SubscriptionNotPendingCancellationException ex) {
+        return respond(HttpStatus.CONFLICT, "SUBSCRIPTION_NOT_PENDING_CANCELLATION", ex.getMessage());
     }
 
     /**
@@ -100,6 +120,19 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<Object> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
         log.warn("Data integrity violation [correlationId={}]", CorrelationIds.current(), ex);
         return respond(HttpStatus.CONFLICT, "CONFLICT", "The request conflicts with existing data.");
+    }
+
+    /**
+     * Two concurrent requests without a shared {@code Idempotency-Key} raced to commit
+     * a transition; {@code Subscription}'s {@code @Version} field detects the loser at
+     * commit time. A transient conflict, not a permanent rejection — a plain retry
+     * resolves it.
+     */
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    public ResponseEntity<Object> handleOptimisticLockingFailure(OptimisticLockingFailureException ex) {
+        log.warn("Optimistic locking failure [correlationId={}]", CorrelationIds.current(), ex);
+        return respond(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
+                "This subscription was modified concurrently by another request. Please retry.");
     }
 
     private ResponseEntity<Object> respond(HttpStatus status, String code, String message) {

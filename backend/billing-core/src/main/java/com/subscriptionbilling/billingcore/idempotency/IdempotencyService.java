@@ -36,16 +36,17 @@ public class IdempotencyService {
     }
 
     /**
-     * Records the key if it hasn't been seen (for this customer + operation) within the
-     * retention window. Returns {@code true} the first time — the caller should proceed.
-     * Returns {@code false} on a duplicate — the caller should treat the request as
-     * already applied. A concurrent race for the same key is resolved by the database's
-     * unique constraint: exactly one caller wins {@code true}.
+     * Returns {@code true} the first time a key is seen (for this customer + operation)
+     * within the retention window — the caller should proceed. Returns {@code false} on
+     * a duplicate, resolving a concurrent race via the database's unique constraint.
      *
-     * <p>Deliberately not wrapped in a single {@code @Transactional}: the read and the
-     * write are each already transactional (Spring Data's per-repository-method default),
-     * and keeping them separate means a lost race's constraint-violation rollback stays
-     * confined to the failed insert's own transaction instead of poisoning this method's.
+     * <p>Deliberately not itself {@code @Transactional}: the insert runs through {@link
+     * IdempotencyKeyRepositoryCustom#insert}'s own {@code REQUIRES_NEW} transaction and
+     * lets a lost race propagate out of it uncaught. Catching the exception in the same
+     * method that owns the transaction would instead leave it marked rollback-only
+     * despite returning normally — Spring reports that as {@code
+     * UnexpectedRollbackException} at commit, regardless of whether the caller (e.g.
+     * {@code SubscriptionService.cancel}) already had its own transaction open.
      */
     public boolean recordIfNew(UUID customerId, String operation, String idempotencyKey) {
         Instant now = Instant.now(clock);
@@ -55,17 +56,36 @@ public class IdempotencyService {
             if (existing.get().getExpiresAt().isAfter(now)) {
                 return false;
             }
-            // Expired: the unique constraint would otherwise block reuse of this key
-            // forever, contradicting the "bounded retention window" this class promises.
-            repository.delete(existing.get());
-            repository.flush();
+            // Expired: the unique constraint would otherwise block reuse forever. Isolated
+            // (REQUIRES_NEW) so it's committed before the insert below runs its own
+            // separate transaction — otherwise, inside an ambient transaction (e.g.
+            // SubscriptionService.cancel), this delete would stay uncommitted and
+            // invisible to the insert's connection under READ COMMITTED, which would then
+            // either see the "expired" row as still present or block on its lock.
+            repository.deleteIsolated(existing.get().getId());
         }
         try {
-            repository.saveAndFlush(new IdempotencyKeyRecord(
+            repository.insert(new IdempotencyKeyRecord(
                     UUID.randomUUID(), customerId, operation, idempotencyKey, now, now.plus(retention)));
             return true;
         } catch (DataIntegrityViolationException lostRace) {
             return false;
         }
+    }
+
+    /**
+     * Releases a key this method previously recorded, for when the operation it was
+     * guarding turned out not to apply after all (a domain-layer rejection) — otherwise
+     * a legitimate retry of that same failing request would be wrongly short-circuited
+     * into a fabricated success. Isolated and immediately committed (see {@link
+     * IdempotencyKeyRepositoryCustom#deleteIsolated}) so the release survives even if
+     * the caller's own ambient transaction goes on to roll back.
+     *
+     * @param customerId     the Customer the key was recorded against
+     * @param operation      the operation name the key was recorded against
+     * @param idempotencyKey the key to release
+     */
+    public void release(UUID customerId, String operation, String idempotencyKey) {
+        repository.deleteIsolated(customerId, operation, idempotencyKey);
     }
 }

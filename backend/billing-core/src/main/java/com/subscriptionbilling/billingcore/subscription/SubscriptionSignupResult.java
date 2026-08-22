@@ -4,12 +4,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Outcome of a signup: the new Subscription's identity/state, the Plan it's on, a
- * freshly issued bearer token for its Customer — the one response shape a pre-auth
- * signup caller needs to become an authenticated caller for every subsequent request —
- * and, depending on which of the three signup paths was taken, either {@code
- * trialEndsAt} (Trial) or {@code billingCycleAnchor} (immediate-paid). Exactly one of
- * those two is non-null for a paid-Plan signup, and both are null for a free-Plan
+ * Outcome of a signup. {@code trialEndsAt} and {@code billingCycleAnchor} are mutually
+ * exclusive, set only for their respective signup path, and both null for a free-Plan
  * signup.
  */
 public record SubscriptionSignupResult(UUID subscriptionId, SubscriptionState state, UUID planId, String accessToken,

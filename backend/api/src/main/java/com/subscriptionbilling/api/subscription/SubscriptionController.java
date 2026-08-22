@@ -15,17 +15,16 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
 
 /**
- * Signup and self-fetch. Signup is this API's identity-bootstrap exception -
- * reachable without a token — so a caller's {@link Jwt} here is optional,
- * present only when a re-subscribing Customer supplied one; the fetch endpoint requires
- * one (enforced by {@code SecurityConfig}), so its {@link Jwt} is never null by the time
- * this controller runs.
+ * Signup is this API's identity-bootstrap exception - reachable without a token — so a
+ * caller's {@link Jwt} here is optional, present only when a re-subscribing Customer
+ * supplied one; every other endpoint requires one (enforced by {@code SecurityConfig}).
  */
 @RestController
 @RequestMapping("/api/v1/subscriptions")
@@ -53,6 +52,24 @@ public class SubscriptionController {
     public SubscriptionResponse getOwn(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
         UUID authenticatedCustomerId = UUID.fromString(jwt.getSubject());
         SubscriptionView view = subscriptionService.getOwnSubscription(id, authenticatedCustomerId);
+        return SubscriptionResponse.from(view);
+    }
+
+    @PostMapping("/{id}/cancel")
+    public SubscriptionResponse cancel(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt,
+                                        @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        UUID authenticatedCustomerId = UUID.fromString(jwt.getSubject());
+        SubscriptionView view = subscriptionService.cancel(
+                id, authenticatedCustomerId, idempotencyKey, CorrelationIds.current());
+        return SubscriptionResponse.from(view);
+    }
+
+    @PostMapping("/{id}/undo-cancel")
+    public SubscriptionResponse undoCancel(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt,
+                                            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        UUID authenticatedCustomerId = UUID.fromString(jwt.getSubject());
+        SubscriptionView view = subscriptionService.undoCancel(
+                id, authenticatedCustomerId, idempotencyKey, CorrelationIds.current());
         return SubscriptionResponse.from(view);
     }
 }
