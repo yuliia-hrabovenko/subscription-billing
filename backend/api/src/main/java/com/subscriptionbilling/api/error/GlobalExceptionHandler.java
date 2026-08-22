@@ -4,9 +4,13 @@ import com.subscriptionbilling.billingcore.plan.PlanUnavailableForSignupExceptio
 import com.subscriptionbilling.billingcore.subscription.DuplicateSubscriptionException;
 import com.subscriptionbilling.billingcore.subscription.PaymentMethodRequiredException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionAccessDeniedException;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionAlreadyCanceledException;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionAlreadyPendingCancellationException;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionNotPendingCancellationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -87,6 +91,23 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return respond(HttpStatus.BAD_REQUEST, "PAYMENT_METHOD_REQUIRED", ex.getMessage());
     }
 
+    @ExceptionHandler(SubscriptionAlreadyCanceledException.class)
+    public ResponseEntity<Object> handleSubscriptionAlreadyCanceled(SubscriptionAlreadyCanceledException ex) {
+        return respond(HttpStatus.CONFLICT, "SUBSCRIPTION_ALREADY_CANCELED", ex.getMessage());
+    }
+
+    @ExceptionHandler(SubscriptionAlreadyPendingCancellationException.class)
+    public ResponseEntity<Object> handleSubscriptionAlreadyPendingCancellation(
+            SubscriptionAlreadyPendingCancellationException ex) {
+        return respond(HttpStatus.CONFLICT, "SUBSCRIPTION_ALREADY_PENDING_CANCELLATION", ex.getMessage());
+    }
+
+    @ExceptionHandler(SubscriptionNotPendingCancellationException.class)
+    public ResponseEntity<Object> handleSubscriptionNotPendingCancellation(
+            SubscriptionNotPendingCancellationException ex) {
+        return respond(HttpStatus.CONFLICT, "SUBSCRIPTION_NOT_PENDING_CANCELLATION", ex.getMessage());
+    }
+
     /**
      * A DB-level constraint violation (e.g. signup racing a duplicate email, or a
      * customer identified by their own token re-subscribing while
@@ -100,6 +121,21 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<Object> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
         log.warn("Data integrity violation [correlationId={}]", CorrelationIds.current(), ex);
         return respond(HttpStatus.CONFLICT, "CONFLICT", "The request conflicts with existing data.");
+    }
+
+    /**
+     * Two concurrent requests without a shared {@code Idempotency-Key} (e.g. a
+     * double-clicked cancel) both read the same Subscription and raced to commit a
+     * transition; {@code Subscription}'s {@code @Version} field detects the loser at
+     * commit time. The client should treat this as a transient conflict, not a
+     * permanent rejection — a plain retry (ideally now carrying an Idempotency-Key)
+     * resolves it.
+     */
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    public ResponseEntity<Object> handleOptimisticLockingFailure(OptimisticLockingFailureException ex) {
+        log.warn("Optimistic locking failure [correlationId={}]", CorrelationIds.current(), ex);
+        return respond(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
+                "This subscription was modified concurrently by another request. Please retry.");
     }
 
     private ResponseEntity<Object> respond(HttpStatus status, String code, String message) {

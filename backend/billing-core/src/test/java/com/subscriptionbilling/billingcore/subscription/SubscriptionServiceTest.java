@@ -6,6 +6,7 @@ import com.subscriptionbilling.audit.AuditLogEntryRepository;
 import com.subscriptionbilling.billingcore.auth.CustomerTokenIssuer;
 import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.customer.CustomerRepository;
+import com.subscriptionbilling.billingcore.idempotency.IdempotencyService;
 import com.subscriptionbilling.billingcore.plan.Plan;
 import com.subscriptionbilling.billingcore.plan.PlanCatalogService;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
@@ -32,9 +33,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Domain-layer coverage of the three signup edges ({@code [*] -> active} free, {@code
- * [*] -> trialing}, {@code [*] -> active} paid-no-trial) and their rejection paths,
- * independent of the HTTP layer.
+ * Domain-layer coverage of {@link SubscriptionService}'s use cases: the three signup
+ * edges ({@code [*] -> active} free, {@code [*] -> trialing}, {@code [*] -> active}
+ * paid-no-trial), cancel/undo-cancel and their rejection paths, ownership enforcement,
+ * and idempotency-key deduplication — independent of the HTTP layer. See {@link
+ * SubscriptionTest} for the state machine's own edges in isolation, without the
+ * repository/audit/idempotency orchestration this class covers.
  */
 @ExtendWith(MockitoExtension.class)
 class SubscriptionServiceTest {
@@ -53,6 +57,8 @@ class SubscriptionServiceTest {
     private AuditLogEntryRepository auditLogEntryRepository;
     @Mock
     private CustomerTokenIssuer tokenIssuer;
+    @Mock
+    private IdempotencyService idempotencyService;
 
     private final UUID planId = UUID.randomUUID();
     private final Plan freePlan = new Plan(planId, "free", "Free");
@@ -60,7 +66,7 @@ class SubscriptionServiceTest {
 
     private SubscriptionService service() {
         return new SubscriptionService(customerRepository, planRepository, subscriptionRepository,
-                planCatalogService, auditLogEntryRepository, tokenIssuer,
+                planCatalogService, auditLogEntryRepository, tokenIssuer, idempotencyService,
                 Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
     }
 
@@ -260,5 +266,231 @@ class SubscriptionServiceTest {
         // Javadoc for why the two must be indistinguishable to the caller.
         assertThatThrownBy(() -> service().getOwnSubscription(subscriptionId, UUID.randomUUID()))
                 .isInstanceOf(SubscriptionAccessDeniedException.class);
+    }
+
+    @Test
+    void cancelFromTrialingTransitionsImmediatelyToCanceledAndWritesAnAuditLogEntry() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startTrial(
+                subscriptionId, new Customer(customerId, "trialist@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        SubscriptionView view = service().cancel(subscriptionId, customerId, null, "corr-cancel-1");
+
+        assertThat(view.state()).isEqualTo(SubscriptionState.CANCELED);
+
+        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getOldState()).isEqualTo("TRIALING");
+        assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
+        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-cancel-1");
+    }
+
+    @Test
+    void cancelFromActiveWithABillingCycleDefersToPendingCancellationAndWritesAnAuditLogEntry() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(customerId, "active@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        SubscriptionView view = service().cancel(subscriptionId, customerId, null, "corr-cancel-2");
+
+        assertThat(view.state()).isEqualTo(SubscriptionState.PENDING_CANCELLATION);
+        assertThat(view.plan().code()).isEqualTo("pro");
+
+        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
+        assertThat(auditEntry.getValue().getNewState()).isEqualTo("PENDING_CANCELLATION");
+    }
+
+    @Test
+    void cancelFromActiveWithNoBillingCycleTransitionsImmediatelyToCanceled() {
+        // A free-Plan Subscription is ACTIVE with no Billing Cycle (billingCycleAnchor
+        // null) — there's no paid period to defer to, so it cancels immediately instead
+        // of stranding in pending_cancellation forever.
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "free-active@example.com"), freePlan, SubscriptionState.ACTIVE);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        SubscriptionView view = service().cancel(subscriptionId, customerId, null, "corr-cancel-2b");
+
+        assertThat(view.state()).isEqualTo(SubscriptionState.CANCELED);
+
+        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
+        assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
+    }
+
+    @Test
+    void cancelFromSuspendedTransitionsImmediatelyToCanceled() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "suspended@example.com"), proPlan, SubscriptionState.SUSPENDED);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        SubscriptionView view = service().cancel(subscriptionId, customerId, null, "corr-cancel-3");
+
+        assertThat(view.state()).isEqualTo(SubscriptionState.CANCELED);
+    }
+
+    @Test
+    void cancelOnAnAlreadyPendingCancellationSubscriptionIsRejected() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(subscriptionId, new Customer(customerId, "pending@example.com"),
+                proPlan, SubscriptionState.PENDING_CANCELLATION);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().cancel(subscriptionId, customerId, null, "corr-cancel-4"))
+                .isInstanceOf(SubscriptionAlreadyPendingCancellationException.class);
+
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void cancelOnAnAlreadyCanceledSubscriptionIsRejected() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "canceled@example.com"), proPlan, SubscriptionState.CANCELED);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().cancel(subscriptionId, customerId, null, "corr-cancel-5"))
+                .isInstanceOf(SubscriptionAlreadyCanceledException.class);
+
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void cancelForAWrongOwnerIsRejectedWithAccessDenied() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(UUID.randomUUID(), "owner@example.com"), proPlan, SubscriptionState.ACTIVE);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().cancel(subscriptionId, UUID.randomUUID(), null, "corr-cancel-6"))
+                .isInstanceOf(SubscriptionAccessDeniedException.class);
+
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void aRepeatedCancelWithTheSameIdempotencyKeyDoesNotReapplyOrWriteASecondAuditEntry() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "retry@example.com"), proPlan, SubscriptionState.ACTIVE);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(idempotencyService.recordIfNew(customerId, SubscriptionService.CANCEL_OPERATION, "key-1")).thenReturn(false);
+
+        SubscriptionView view = service().cancel(subscriptionId, customerId, "key-1", "corr-cancel-7");
+
+        // The Subscription is untouched: still ACTIVE, not PENDING_CANCELLATION — the
+        // transition was never re-run for this deduplicated retry.
+        assertThat(view.state()).isEqualTo(SubscriptionState.ACTIVE);
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void cancelWithAnIdempotencyKeyThatEndsUpRejectedReleasesTheKeyInsteadOfBurningIt() {
+        // The key was recorded (recordIfNew returned true, meaning it committed
+        // independently) before cancel() ran and threw — since the transition never
+        // actually applied, the key must be released, or a legitimate retry of this
+        // same failing request would find the key already "used" and be wrongly
+        // short-circuited into a fabricated success instead of the same rejection.
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "rejected@example.com"), proPlan, SubscriptionState.CANCELED);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(idempotencyService.recordIfNew(customerId, SubscriptionService.CANCEL_OPERATION, "key-3")).thenReturn(true);
+
+        assertThatThrownBy(() -> service().cancel(subscriptionId, customerId, "key-3", "corr-cancel-8"))
+                .isInstanceOf(SubscriptionAlreadyCanceledException.class);
+
+        verify(idempotencyService).release(customerId, SubscriptionService.CANCEL_OPERATION, "key-3");
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void cancelWithNoIdempotencyKeyNeverTouchesIdempotencyServiceEvenOnRejection() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "norejeckey@example.com"), proPlan, SubscriptionState.CANCELED);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().cancel(subscriptionId, customerId, null, "corr-cancel-9"))
+                .isInstanceOf(SubscriptionAlreadyCanceledException.class);
+
+        verify(idempotencyService, never()).release(any(), any(), any());
+    }
+
+    @Test
+    void undoCancelFromPendingCancellationRestoresActiveAndWritesAnAuditLogEntry() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(subscriptionId, new Customer(customerId, "pending@example.com"),
+                proPlan, SubscriptionState.PENDING_CANCELLATION);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        SubscriptionView view = service().undoCancel(subscriptionId, customerId, null, "corr-undo-1");
+
+        assertThat(view.state()).isEqualTo(SubscriptionState.ACTIVE);
+
+        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getOldState()).isEqualTo("PENDING_CANCELLATION");
+        assertThat(auditEntry.getValue().getNewState()).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void undoCancelFromAnyOtherStateIsRejected() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "active@example.com"), proPlan, SubscriptionState.ACTIVE);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().undoCancel(subscriptionId, customerId, null, "corr-undo-2"))
+                .isInstanceOf(SubscriptionNotPendingCancellationException.class);
+
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void undoCancelForAWrongOwnerIsRejectedWithAccessDenied() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(subscriptionId, new Customer(UUID.randomUUID(), "owner@example.com"),
+                proPlan, SubscriptionState.PENDING_CANCELLATION);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().undoCancel(subscriptionId, UUID.randomUUID(), null, "corr-undo-3"))
+                .isInstanceOf(SubscriptionAccessDeniedException.class);
+
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void aRepeatedUndoCancelWithTheSameIdempotencyKeyDoesNotReapplyOrWriteASecondAuditEntry() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(subscriptionId, new Customer(customerId, "retry@example.com"),
+                proPlan, SubscriptionState.PENDING_CANCELLATION);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(idempotencyService.recordIfNew(customerId, SubscriptionService.UNDO_CANCEL_OPERATION, "key-2"))
+                .thenReturn(false);
+
+        SubscriptionView view = service().undoCancel(subscriptionId, customerId, "key-2", "corr-undo-4");
+
+        assertThat(view.state()).isEqualTo(SubscriptionState.PENDING_CANCELLATION);
+        verify(auditLogEntryRepository, never()).append(any());
     }
 }

@@ -6,6 +6,7 @@ import com.subscriptionbilling.audit.AuditLogEntryRepository;
 import com.subscriptionbilling.billingcore.auth.CustomerTokenIssuer;
 import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.customer.CustomerRepository;
+import com.subscriptionbilling.billingcore.idempotency.IdempotencyService;
 import com.subscriptionbilling.billingcore.plan.PlanCatalogService;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
 import com.subscriptionbilling.billingcore.plan.PlanSummary;
@@ -19,12 +20,14 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * Owns the Subscription lifecycle's entry points: bringing a Subscription into
- * existence and fetching one back for its owner. Every write here is one atomic
- * use case — persistence, its audit trail, and (for signup) token issuance all commit
- * or fail together — not a sequence of independently-failable steps.
+ * existence, fetching one back for its owner, and canceling/undoing a cancellation.
+ * Every write here is one atomic use case — persistence, its audit trail, and (for
+ * signup) token issuance all commit or fail together — not a sequence of
+ * independently-failable steps.
  */
 @Service
 public class SubscriptionService {
@@ -35,31 +38,41 @@ public class SubscriptionService {
      */
     static final Duration TRIAL_DURATION = Duration.ofDays(14);
 
+    /** {@link IdempotencyService} operation name for {@link #cancel}. */
+    static final String CANCEL_OPERATION = "cancel";
+
+    /** {@link IdempotencyService} operation name for {@link #undoCancel}. */
+    static final String UNDO_CANCEL_OPERATION = "undo-cancel";
+
     private final CustomerRepository customerRepository;
     private final PlanRepository planRepository;
     private final SubscriptionRepository subscriptionRepository;
     private final PlanCatalogService planCatalogService;
     private final AuditLogEntryRepository auditLogEntryRepository;
     private final CustomerTokenIssuer tokenIssuer;
+    private final IdempotencyService idempotencyService;
     private final Clock clock;
 
     @Autowired
     public SubscriptionService(CustomerRepository customerRepository, PlanRepository planRepository,
                                 SubscriptionRepository subscriptionRepository, PlanCatalogService planCatalogService,
-                                AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer) {
+                                AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
+                                IdempotencyService idempotencyService) {
         this(customerRepository, planRepository, subscriptionRepository, planCatalogService, auditLogEntryRepository,
-                tokenIssuer, Clock.systemUTC());
+                tokenIssuer, idempotencyService, Clock.systemUTC());
     }
 
     SubscriptionService(CustomerRepository customerRepository, PlanRepository planRepository,
                          SubscriptionRepository subscriptionRepository, PlanCatalogService planCatalogService,
-                         AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer, Clock clock) {
+                         AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
+                         IdempotencyService idempotencyService, Clock clock) {
         this.customerRepository = customerRepository;
         this.planRepository = planRepository;
         this.subscriptionRepository = subscriptionRepository;
         this.planCatalogService = planCatalogService;
         this.auditLogEntryRepository = auditLogEntryRepository;
         this.tokenIssuer = tokenIssuer;
+        this.idempotencyService = idempotencyService;
         this.clock = clock;
     }
 
@@ -149,10 +162,115 @@ public class SubscriptionService {
      */
     @Transactional(readOnly = true)
     public SubscriptionView getOwnSubscription(UUID subscriptionId, UUID authenticatedCustomerId) {
-        Subscription subscription = subscriptionRepository.findById(subscriptionId)
+        return SubscriptionView.from(ownedSubscription(subscriptionId, authenticatedCustomerId));
+    }
+
+    /**
+     * Cancels the Customer's own Subscription — see {@link Subscription#cancel()} for
+     * which originating state produces immediate vs. deferred termination, and for the
+     * exceptions thrown when a cancellation can't be applied.
+     *
+     * <p>{@code idempotencyKey}, when present, is recorded against this Customer and
+     * the {@code "cancel"} operation before the transition is attempted: a request
+     * reusing a key already recorded within the retention window is treated as an
+     * already-applied retry and short-circuits to the Subscription's current state
+     * without re-running {@link Subscription#cancel()} or writing a second {@link
+     * com.subscriptionbilling.audit.AuditLogEntry}. A blank or absent key skips
+     * deduplication entirely — every such request is attempted as a fresh transition.
+     *
+     * @param subscriptionId         the Subscription to cancel
+     * @param authenticatedCustomerId the Customer the caller's bearer token identifies
+     * @param idempotencyKey          the client-supplied {@code Idempotency-Key} header
+     *                                value, or null/blank if none was sent
+     * @param correlationId           rides along on the written {@link
+     *                                com.subscriptionbilling.audit.AuditLogEntry}
+     * @return the Subscription's state after this request — either the just-applied
+     *         transition, or (for a deduplicated retry) its unchanged current state
+     * @throws SubscriptionAccessDeniedException              if the Subscription doesn't
+     *         exist or doesn't belong to this Customer
+     * @throws SubscriptionAlreadyPendingCancellationException if a cancellation is
+     *         already pending
+     * @throws SubscriptionAlreadyCanceledException            if already {@code canceled}
+     */
+    @Transactional
+    public SubscriptionView cancel(UUID subscriptionId, UUID authenticatedCustomerId, String idempotencyKey,
+                                    String correlationId) {
+        return applyTransition(subscriptionId, authenticatedCustomerId, idempotencyKey, CANCEL_OPERATION,
+                Subscription::cancel, correlationId);
+    }
+
+    /**
+     * Reverses the Customer's own deferred cancellation — see {@link
+     * Subscription#undoCancel()} for the single originating state this requires and the
+     * exception thrown otherwise. Idempotency handling mirrors {@link #cancel}: a
+     * repeated request with an already-recorded key short-circuits to the
+     * Subscription's current state instead of re-running the transition.
+     *
+     * @param subscriptionId         the Subscription to restore to {@code active}
+     * @param authenticatedCustomerId the Customer the caller's bearer token identifies
+     * @param idempotencyKey          the client-supplied {@code Idempotency-Key} header
+     *                                value, or null/blank if none was sent
+     * @param correlationId           rides along on the written {@link
+     *                                com.subscriptionbilling.audit.AuditLogEntry}
+     * @return the Subscription's state after this request — either the just-applied
+     *         transition, or (for a deduplicated retry) its unchanged current state
+     * @throws SubscriptionAccessDeniedException           if the Subscription doesn't
+     *         exist or doesn't belong to this Customer
+     * @throws SubscriptionNotPendingCancellationException if not currently {@code
+     *         pending_cancellation}
+     */
+    @Transactional
+    public SubscriptionView undoCancel(UUID subscriptionId, UUID authenticatedCustomerId, String idempotencyKey,
+                                        String correlationId) {
+        return applyTransition(subscriptionId, authenticatedCustomerId, idempotencyKey, UNDO_CANCEL_OPERATION,
+                Subscription::undoCancel, correlationId);
+    }
+
+    /**
+     * Shared skeleton behind {@link #cancel} and {@link #undoCancel}: look up the
+     * Customer's own Subscription, short-circuit a deduplicated retry, otherwise apply
+     * {@code transition} and record it. Both callers differ only in which domain method
+     * runs and which {@link IdempotencyService} operation name scopes its dedup key —
+     * everything else (ownership enforcement, the dedup short-circuit, and the
+     * old-state/new-state audit write) is identical, so it lives here once.
+     *
+     * <p>An {@code idempotencyKey} is recorded (committed, independent of this method's
+     * own transaction) <em>before</em> {@code transition} runs, since that's the only
+     * way to close the race between two concurrent requests. If {@code transition} then
+     * rejects the request (e.g. canceling an already-{@code canceled} Subscription),
+     * the just-recorded key is released before the rejection propagates — otherwise a
+     * legitimate retry of that same failing request, reusing the same key, would find
+     * the key already recorded and be wrongly short-circuited into a fabricated success
+     * instead of seeing the same rejection again.
+     */
+    private SubscriptionView applyTransition(UUID subscriptionId, UUID authenticatedCustomerId, String idempotencyKey,
+                                               String operation, Consumer<Subscription> transition,
+                                               String correlationId) {
+        Subscription subscription = ownedSubscription(subscriptionId, authenticatedCustomerId);
+        boolean hasIdempotencyKey = StringUtils.hasText(idempotencyKey);
+        if (hasIdempotencyKey && !idempotencyService.recordIfNew(authenticatedCustomerId, operation, idempotencyKey)) {
+            return SubscriptionView.from(subscription);
+        }
+
+        try {
+            SubscriptionState oldState = subscription.getState();
+            transition.accept(subscription);
+            auditLogEntryRepository.append(new AuditLogEntry(
+                    UUID.randomUUID(), subscription.getId(), ActorType.CUSTOMER, oldState.name(),
+                    subscription.getState().name(), correlationId));
+            return SubscriptionView.from(subscription);
+        } catch (RuntimeException transitionFailed) {
+            if (hasIdempotencyKey) {
+                idempotencyService.release(authenticatedCustomerId, operation, idempotencyKey);
+            }
+            throw transitionFailed;
+        }
+    }
+
+    private Subscription ownedSubscription(UUID subscriptionId, UUID authenticatedCustomerId) {
+        return subscriptionRepository.findById(subscriptionId)
                 .filter(candidate -> candidate.getCustomer().getId().equals(authenticatedCustomerId))
                 .orElseThrow(() -> new SubscriptionAccessDeniedException(subscriptionId));
-        return SubscriptionView.from(subscription);
     }
 
     private Customer resolveCustomer(SignupCommand command) {

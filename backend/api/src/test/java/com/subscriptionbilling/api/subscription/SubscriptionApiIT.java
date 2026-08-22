@@ -3,8 +3,14 @@ package com.subscriptionbilling.api.subscription;
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
 import com.subscriptionbilling.audit.AuditLogEntry;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
+import com.subscriptionbilling.billingcore.auth.CustomerTokenIssuer;
+import com.subscriptionbilling.billingcore.customer.Customer;
+import com.subscriptionbilling.billingcore.customer.CustomerRepository;
 import com.subscriptionbilling.billingcore.plan.Plan;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
+import com.subscriptionbilling.billingcore.subscription.Subscription;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionRepository;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionState;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -24,7 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the caller's own Subscription, an unauthenticated fetch is rejected, a different
  * Customer's valid token is rejected (403, never 404), a duplicate signup and a
  * retired-Plan signup are both rejected with a structured error, and exactly one
- * AuditLogEntry exists per signup.
+ * AuditLogEntry exists per signup. Cancel and undo-cancel exercise every originating
+ * state's edge (immediate vs. deferred termination, the invalid-transition rejections,
+ * ownership enforcement, and Idempotency-Key deduplication) through the HTTP layer.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -37,7 +45,16 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
     private PlanRepository planRepository;
 
     @Autowired
+    private CustomerRepository customerRepository;
+
+    @Autowired
+    private SubscriptionRepository subscriptionRepository;
+
+    @Autowired
     private AuditLogEntryRepository auditLogEntryRepository;
+
+    @Autowired
+    private CustomerTokenIssuer tokenIssuer;
 
     @Autowired
     private JsonMapper jsonMapper;
@@ -230,12 +247,225 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
         });
     }
 
+    @Test
+    void cancelFromTrialingTransitionsImmediatelyToCanceledVerifiedByFollowUpGet() {
+        SignupResponse signup = trialSignUp("trial-cancel-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("CANCELED");
+
+        mvc.get().uri("/api/v1/subscriptions/{id}", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("CANCELED");
+    }
+
+    @Test
+    void cancelFromActiveWithABillingCycleDefersToPendingCancellationWithAccessImplyingFieldsUnchangedVerifiedByFollowUpGet() {
+        SignupResponse signup = immediatePaidSignUp("active-cancel-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("PENDING_CANCELLATION");
+
+        var body = mvc.get().uri("/api/v1/subscriptions/{id}", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .bodyJson();
+        body.extractingPath("$.state").asString().isEqualTo("PENDING_CANCELLATION");
+        body.extractingPath("$.plan.code").asString().isEqualTo("pro");
+    }
+
+    @Test
+    void cancelFromActiveWithNoBillingCycleTransitionsImmediatelyToCanceled() {
+        // A free-Plan Subscription is ACTIVE with no Billing Cycle — there's no paid
+        // period to defer to, so it must cancel immediately rather than stranding in
+        // pending_cancellation forever.
+        SignupResponse signup = signUp("free-active-cancel-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("CANCELED");
+    }
+
+    @Test
+    void cancelFromSuspendedTestSeededFixtureTransitionsImmediatelyToCanceled() {
+        SignupResponse owner = seedSuspendedSubscription();
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", owner.subscriptionId())
+                .header("Authorization", "Bearer " + owner.accessToken())
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("CANCELED");
+    }
+
+    @Test
+    void cancelOnAnAlreadyPendingCancellationSubscriptionReturnsAStructured409() {
+        SignupResponse signup = immediatePaidSignUp("already-pending-" + UUID.randomUUID() + "@example.com");
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat().hasStatusOk();
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .hasStatus(409)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("SUBSCRIPTION_ALREADY_PENDING_CANCELLATION");
+    }
+
+    @Test
+    void cancelOnAnAlreadyCanceledSubscriptionReturnsAStructured409() {
+        SignupResponse signup = trialSignUp("already-canceled-" + UUID.randomUUID() + "@example.com");
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat().hasStatusOk();
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .hasStatus(409)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("SUBSCRIPTION_ALREADY_CANCELED");
+    }
+
+    @Test
+    void undoCancelFromPendingCancellationReturnsActiveVerifiedByFollowUpGet() {
+        SignupResponse signup = immediatePaidSignUp("undo-" + UUID.randomUUID() + "@example.com");
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat().hasStatusOk();
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/undo-cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("ACTIVE");
+
+        mvc.get().uri("/api/v1/subscriptions/{id}", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void undoCancelFromAnyOtherStateReturnsAStructured409() {
+        SignupResponse signup = signUp("undo-reject-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/undo-cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .hasStatus(409)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("SUBSCRIPTION_NOT_PENDING_CANCELLATION");
+    }
+
+    @Test
+    void aRepeatedCancelRequestWithTheSameIdempotencyKeyDoesNotProduceASecondTransitionOrAuditEntry() {
+        SignupResponse signup = immediatePaidSignUp("idem-" + UUID.randomUUID() + "@example.com");
+        String idempotencyKey = "idem-key-" + UUID.randomUUID();
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .header("Idempotency-Key", idempotencyKey)
+                .assertThat().hasStatusOk();
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .header("Idempotency-Key", idempotencyKey)
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("PENDING_CANCELLATION");
+
+        List<AuditLogEntry> entries = auditLogEntryRepository.findBySubscriptionId(signup.subscriptionId());
+        // One for the signup, one for the single (deduplicated) cancel.
+        assertThat(entries).hasSize(2);
+    }
+
+    @Test
+    void cancelForAWrongOwnerIsRejectedWith403() {
+        SignupResponse owner = signUp("cancel-victim-" + UUID.randomUUID() + "@example.com");
+        SignupResponse otherCustomer = signUp("cancel-attacker-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", owner.subscriptionId())
+                .header("Authorization", "Bearer " + otherCustomer.accessToken())
+                .assertThat()
+                .hasStatus(403)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("FORBIDDEN");
+    }
+
+    @Test
+    void undoCancelForAWrongOwnerIsRejectedWith403() {
+        SignupResponse owner = signUp("undo-victim-" + UUID.randomUUID() + "@example.com");
+        mvc.post().uri("/api/v1/subscriptions/{id}/cancel", owner.subscriptionId())
+                .header("Authorization", "Bearer " + owner.accessToken())
+                .assertThat().hasStatusOk();
+        SignupResponse otherCustomer = signUp("undo-attacker-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/undo-cancel", owner.subscriptionId())
+                .header("Authorization", "Bearer " + otherCustomer.accessToken())
+                .assertThat()
+                .hasStatus(403)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("FORBIDDEN");
+    }
+
     private SignupResponse signUp(String email) {
         MvcTestResult result = mvc.post().uri("/api/v1/subscriptions")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(signupBody(freePlanId(), email))
                 .exchange();
         return readBody(result, SignupResponse.class);
+    }
+
+    private SignupResponse trialSignUp(String email) {
+        MvcTestResult result = mvc.post().uri("/api/v1/subscriptions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(trialSignupBody(proPlanId(), email))
+                .exchange();
+        return readBody(result, SignupResponse.class);
+    }
+
+    private SignupResponse immediatePaidSignUp(String email) {
+        MvcTestResult result = mvc.post().uri("/api/v1/subscriptions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(immediatePaidSignupBody(proPlanId(), email))
+                .exchange();
+        return readBody(result, SignupResponse.class);
+    }
+
+    /**
+     * Nothing in this spec's HTTP scope produces {@code suspended} yet (Dunning owns
+     * that) — seeded directly via the repository, per the ticket's own guidance for
+     * exercising this transition. Uses a fresh Customer with no other Subscription:
+     * Invariant 1's partial unique index would reject a second non-canceled row for a
+     * Customer that already has one from a prior signup.
+     */
+    private SignupResponse seedSuspendedSubscription() {
+        Customer customer = customerRepository.saveAndFlush(
+                new Customer(UUID.randomUUID(), "suspended-seed-" + UUID.randomUUID() + "@example.com"));
+        Plan proPlan = planRepository.findById(proPlanId()).orElseThrow();
+
+        Subscription suspended = new Subscription(UUID.randomUUID(), customer, proPlan, SubscriptionState.SUSPENDED);
+        subscriptionRepository.saveAndFlush(suspended);
+        String accessToken = tokenIssuer.issueFor(customer.getId());
+        return new SignupResponse(suspended.getId(), "SUSPENDED", proPlanId(), accessToken, null, null);
     }
 
     private <T> T readBody(MvcTestResult result, Class<T> type) {
