@@ -1,7 +1,7 @@
 package com.subscriptionbilling.api.subscription;
 
 import com.subscriptionbilling.api.error.CorrelationIds;
-import com.subscriptionbilling.billingcore.subscription.FreeSignupCommand;
+import com.subscriptionbilling.billingcore.subscription.SignupCommand;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionService;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionSignupResult;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionView;
@@ -42,9 +42,10 @@ public class SubscriptionController {
     public ResponseEntity<SignupResponse> signUp(@RequestBody @Valid SignupRequest request,
                                                   @AuthenticationPrincipal Jwt jwt) {
         UUID existingCustomerId = jwt != null ? UUID.fromString(jwt.getSubject()) : null;
-        FreeSignupCommand command = new FreeSignupCommand(
-                request.planId(), request.email(), existingCustomerId, CorrelationIds.current());
-        SubscriptionSignupResult result = subscriptionService.signUpForFreePlan(command);
+        SignupCommand command = new SignupCommand(
+                request.planId(), request.email(), existingCustomerId, request.useTrialOrDefault(),
+                request.paymentMethodToken(), CorrelationIds.current());
+        SubscriptionSignupResult result = subscriptionService.signUp(command);
         return ResponseEntity.status(HttpStatus.CREATED).body(SignupResponse.from(result));
     }
 

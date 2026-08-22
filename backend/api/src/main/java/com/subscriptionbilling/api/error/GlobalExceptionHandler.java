@@ -1,8 +1,9 @@
 package com.subscriptionbilling.api.error;
 
 import com.subscriptionbilling.billingcore.plan.PlanUnavailableForSignupException;
+import com.subscriptionbilling.billingcore.subscription.DuplicateSubscriptionException;
+import com.subscriptionbilling.billingcore.subscription.PaymentMethodRequiredException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionAccessDeniedException;
-import com.subscriptionbilling.billingcore.subscription.UnsupportedSignupPlanException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -60,14 +61,30 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return respond(HttpStatus.FORBIDDEN, "FORBIDDEN", ex.getMessage());
     }
 
+    /**
+     * Invariant 10: a retired (or otherwise unselectable) Plan is a conflict between the
+     * request and the Plan's current state, not a malformed request — so this is a 409,
+     * consistent with {@link #handleDuplicateSubscription} below.
+     */
     @ExceptionHandler(PlanUnavailableForSignupException.class)
     public ResponseEntity<Object> handlePlanUnavailableForSignup(PlanUnavailableForSignupException ex) {
-        return respond(HttpStatus.BAD_REQUEST, "PLAN_UNAVAILABLE_FOR_SIGNUP", ex.getMessage());
+        return respond(HttpStatus.CONFLICT, "PLAN_UNAVAILABLE_FOR_SIGNUP", ex.getMessage());
     }
 
-    @ExceptionHandler(UnsupportedSignupPlanException.class)
-    public ResponseEntity<Object> handleUnsupportedSignupPlan(UnsupportedSignupPlanException ex) {
-        return respond(HttpStatus.BAD_REQUEST, "UNSUPPORTED_SIGNUP_PLAN", ex.getMessage());
+    /**
+     * Invariant 1: the identified Customer already has a non-{@code canceled}
+     * Subscription. A dedicated 409 with its own code, distinct from the generic {@link
+     * #handleDataIntegrityViolation} fallback below, which exists only for the race this
+     * application-layer check can't catch.
+     */
+    @ExceptionHandler(DuplicateSubscriptionException.class)
+    public ResponseEntity<Object> handleDuplicateSubscription(DuplicateSubscriptionException ex) {
+        return respond(HttpStatus.CONFLICT, "DUPLICATE_SUBSCRIPTION", ex.getMessage());
+    }
+
+    @ExceptionHandler(PaymentMethodRequiredException.class)
+    public ResponseEntity<Object> handlePaymentMethodRequired(PaymentMethodRequiredException ex) {
+        return respond(HttpStatus.BAD_REQUEST, "PAYMENT_METHOD_REQUIRED", ex.getMessage());
     }
 
     /**
