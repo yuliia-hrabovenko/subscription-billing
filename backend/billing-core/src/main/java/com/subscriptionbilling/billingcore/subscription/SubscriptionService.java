@@ -77,29 +77,14 @@ public class SubscriptionService {
     }
 
     /**
-     * Creates a Subscription for a prospective or re-subscribing Customer, taking
-     * exactly one of three paths based on the target Plan's price and {@code
-     * command.useTrial()}:
+     * Takes exactly one of three paths based on the target Plan's price and {@code
+     * command.useTrial()}: free ({@code [*] -> active}, no Billing Cycle), Trial
+     * ({@code [*] -> trialing}, no Billing Cycle until it converts), or immediate-paid
+     * ({@code [*] -> active} with a Billing Cycle anchored to now — no charge is
+     * actually performed by this method; money movement is a separate concern).
      *
-     * <ul>
-     *     <li>Free Plan (price is zero) — the {@code [*] -> active} edge, no Trial, no
-     *     Billing Cycle (a free Subscription never has one).</li>
-     *     <li>Paid Plan, Trial opted in — the {@code [*] -> trialing} edge, no Billing
-     *     Cycle yet (nothing is charged until the Trial converts).</li>
-     *     <li>Paid Plan, no Trial — the {@code [*] -> active} edge with a Billing Cycle
-     *     anchored to now. No charge is actually performed by this method: money
-     *     movement is a separate concern that acts on the domain state this method
-     *     establishes.</li>
-     * </ul>
-     *
-     * <p>Before creating anything, this method enforces two rules: the target Plan
-     * must be available for signup (exists, not retired, has a current price), and — if
-     * the request identified an existing Customer via a bearer token — that Customer
-     * must not already hold a non-{@code canceled} Subscription (a Customer may have at
-     * most one at a time; re-subscribing after a cancellation is fine and always
-     * produces a brand-new Subscription row with fresh Trial eligibility, never a
-     * reactivated old one). A paid-Plan signup additionally requires {@code
-     * command.paymentMethodToken()} to be present, for either of its two paths.
+     * <p>Re-subscribing after a cancellation always produces a brand-new Subscription
+     * row with fresh Trial eligibility, never a reactivated old one.
      *
      * @param command the signup request, including which Plan and whether a Trial was
      *                requested
@@ -166,19 +151,11 @@ public class SubscriptionService {
     }
 
     /**
-     * Cancels the Customer's own Subscription — see {@link Subscription#cancel()} for
-     * which originating state produces immediate vs. deferred termination, and for the
-     * exceptions thrown when a cancellation can't be applied.
+     * See {@link Subscription#cancel()} for which originating state produces immediate
+     * vs. deferred termination. A blank or absent {@code idempotencyKey} skips
+     * deduplication — see {@link #applyTransition} for the dedup/release contract.
      *
-     * <p>{@code idempotencyKey}, when present, is recorded against this Customer and
-     * the {@code "cancel"} operation before the transition is attempted: a request
-     * reusing a key already recorded within the retention window is treated as an
-     * already-applied retry and short-circuits to the Subscription's current state
-     * without re-running {@link Subscription#cancel()} or writing a second {@link
-     * com.subscriptionbilling.audit.AuditLogEntry}. A blank or absent key skips
-     * deduplication entirely — every such request is attempted as a fresh transition.
-     *
-     * @param subscriptionId         the Subscription to cancel
+     * @param subscriptionId          the Subscription to cancel
      * @param authenticatedCustomerId the Customer the caller's bearer token identifies
      * @param idempotencyKey          the client-supplied {@code Idempotency-Key} header
      *                                value, or null/blank if none was sent
@@ -200,13 +177,11 @@ public class SubscriptionService {
     }
 
     /**
-     * Reverses the Customer's own deferred cancellation — see {@link
-     * Subscription#undoCancel()} for the single originating state this requires and the
-     * exception thrown otherwise. Idempotency handling mirrors {@link #cancel}: a
-     * repeated request with an already-recorded key short-circuits to the
-     * Subscription's current state instead of re-running the transition.
+     * See {@link Subscription#undoCancel()} for the single originating state this
+     * requires. Idempotency handling mirrors {@link #cancel} — see {@link
+     * #applyTransition}.
      *
-     * @param subscriptionId         the Subscription to restore to {@code active}
+     * @param subscriptionId          the Subscription to restore to {@code active}
      * @param authenticatedCustomerId the Customer the caller's bearer token identifies
      * @param idempotencyKey          the client-supplied {@code Idempotency-Key} header
      *                                value, or null/blank if none was sent
@@ -227,12 +202,7 @@ public class SubscriptionService {
     }
 
     /**
-     * Shared skeleton behind {@link #cancel} and {@link #undoCancel}: look up the
-     * Customer's own Subscription, short-circuit a deduplicated retry, otherwise apply
-     * {@code transition} and record it. Both callers differ only in which domain method
-     * runs and which {@link IdempotencyService} operation name scopes its dedup key —
-     * everything else (ownership enforcement, the dedup short-circuit, and the
-     * old-state/new-state audit write) is identical, so it lives here once.
+     * Shared skeleton behind {@link #cancel} and {@link #undoCancel}.
      *
      * <p>An {@code idempotencyKey} is recorded (committed, independent of this method's
      * own transaction) <em>before</em> {@code transition} runs, since that's the only
@@ -255,6 +225,11 @@ public class SubscriptionService {
         try {
             SubscriptionState oldState = subscription.getState();
             transition.accept(subscription);
+            // Flushed explicitly (rather than left to commit-time, after this method
+            // returns) so a lost optimistic-lock race — Subscription's @Version field —
+            // throws here, inside this try block, instead of at the transactional
+            // proxy's commit boundary where the catch below could never see it.
+            subscriptionRepository.saveAndFlush(subscription);
             auditLogEntryRepository.append(new AuditLogEntry(
                     UUID.randomUUID(), subscription.getId(), ActorType.CUSTOMER, oldState.name(),
                     subscription.getState().name(), correlationId));

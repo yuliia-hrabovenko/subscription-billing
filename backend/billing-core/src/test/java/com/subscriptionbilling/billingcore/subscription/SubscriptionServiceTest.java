@@ -17,6 +17,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -416,6 +417,28 @@ class SubscriptionServiceTest {
                 .isInstanceOf(SubscriptionAlreadyCanceledException.class);
 
         verify(idempotencyService).release(customerId, SubscriptionService.CANCEL_OPERATION, "key-3");
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void cancelReleasesTheIdempotencyKeyWhenTheFlushFailsWithOptimisticLocking() {
+        // Unlike a domain-layer rejection (Subscription.cancel() throwing before any
+        // mutation), an optimistic-lock failure only surfaces once the mutated
+        // Subscription is flushed — proving the release logic covers failures raised by
+        // the explicit saveAndFlush call, not just ones raised by the transition itself.
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "optlock@example.com"), proPlan, SubscriptionState.ACTIVE);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(idempotencyService.recordIfNew(customerId, SubscriptionService.CANCEL_OPERATION, "key-4")).thenReturn(true);
+        when(subscriptionRepository.saveAndFlush(subscription))
+                .thenThrow(new ObjectOptimisticLockingFailureException(Subscription.class, subscriptionId));
+
+        assertThatThrownBy(() -> service().cancel(subscriptionId, customerId, "key-4", "corr-cancel-10"))
+                .isInstanceOf(ObjectOptimisticLockingFailureException.class);
+
+        verify(idempotencyService).release(customerId, SubscriptionService.CANCEL_OPERATION, "key-4");
         verify(auditLogEntryRepository, never()).append(any());
     }
 

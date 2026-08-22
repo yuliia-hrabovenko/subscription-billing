@@ -66,9 +66,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Invariant 10: a retired (or otherwise unselectable) Plan is a conflict between the
-     * request and the Plan's current state, not a malformed request — so this is a 409,
-     * consistent with {@link #handleDuplicateSubscription} below.
+     * A retired (or otherwise unselectable) Plan is a conflict with the Plan's current
+     * state, not a malformed request — 409, consistent with {@link
+     * #handleDuplicateSubscription} below.
      */
     @ExceptionHandler(PlanUnavailableForSignupException.class)
     public ResponseEntity<Object> handlePlanUnavailableForSignup(PlanUnavailableForSignupException ex) {
@@ -76,10 +76,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Invariant 1: the identified Customer already has a non-{@code canceled}
-     * Subscription. A dedicated 409 with its own code, distinct from the generic {@link
-     * #handleDataIntegrityViolation} fallback below, which exists only for the race this
-     * application-layer check can't catch.
+     * A dedicated 409, distinct from the generic {@link #handleDataIntegrityViolation}
+     * fallback below, which exists only for the race this application-layer check
+     * can't catch.
      */
     @ExceptionHandler(DuplicateSubscriptionException.class)
     public ResponseEntity<Object> handleDuplicateSubscription(DuplicateSubscriptionException ex) {
@@ -124,11 +123,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Two concurrent requests without a shared {@code Idempotency-Key} (e.g. a
-     * double-clicked cancel) both read the same Subscription and raced to commit a
-     * transition; {@code Subscription}'s {@code @Version} field detects the loser at
-     * commit time. The client should treat this as a transient conflict, not a
-     * permanent rejection — a plain retry (ideally now carrying an Idempotency-Key)
+     * Two concurrent requests without a shared {@code Idempotency-Key} raced to commit
+     * a transition; {@code Subscription}'s {@code @Version} field detects the loser at
+     * commit time. A transient conflict, not a permanent rejection — a plain retry
      * resolves it.
      */
     @ExceptionHandler(OptimisticLockingFailureException.class)

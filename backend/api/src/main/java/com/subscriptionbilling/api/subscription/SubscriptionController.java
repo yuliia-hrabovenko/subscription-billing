@@ -22,13 +22,9 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * Signup, self-fetch, cancel, and undo-cancel. Signup is this API's identity-bootstrap
- * exception - reachable without a token — so a caller's {@link Jwt} here is optional,
- * present only when a re-subscribing Customer supplied one; every other endpoint
- * requires one (enforced by {@code SecurityConfig}), so its {@link Jwt} is never null
- * by the time this controller runs for those. Cancel and undo-cancel both accept an
- * optional {@code Idempotency-Key} header, passed straight through to {@link
- * SubscriptionService} — see its Javadoc for the deduplication contract.
+ * Signup is this API's identity-bootstrap exception - reachable without a token — so a
+ * caller's {@link Jwt} here is optional, present only when a re-subscribing Customer
+ * supplied one; every other endpoint requires one (enforced by {@code SecurityConfig}).
  */
 @RestController
 @RequestMapping("/api/v1/subscriptions")

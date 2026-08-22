@@ -3,12 +3,9 @@ package com.subscriptionbilling.billingcore.subscription;
 import java.util.UUID;
 
 /**
- * An undo-cancel request targeted a Subscription that isn't currently {@code
- * pending_cancellation} — nothing pending to undo, whether because it was never
- * canceled ({@code trialing}, {@code active}, {@code suspended}) or because its
- * cancellation already took effect ({@code canceled}, terminal per Invariant 7). One
- * exception covers every such originating state: from the caller's perspective they're
- * all the same outcome, "there's no pending cancellation on this Subscription to undo."
+ * Covers every non-{@code pending_cancellation} originating state with one exception:
+ * from the caller's perspective, "never canceled" and "cancellation already took
+ * effect" are the same outcome — nothing pending to undo.
  */
 public class SubscriptionNotPendingCancellationException extends RuntimeException {
 

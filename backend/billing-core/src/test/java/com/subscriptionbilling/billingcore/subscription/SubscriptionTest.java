@@ -49,6 +49,22 @@ class SubscriptionTest {
     }
 
     @Test
+    void cancelFromSuspendedClearsABillingCycleAnchorInheritedFromAnEarlierPaidActiveLife() {
+        // A suspended Subscription can have reached this state from a paid active one
+        // (renewal charge failed) and so still carry a billingCycleAnchor — no
+        // production path builds this combination yet (Dunning owns suspend), but
+        // cancel() must still clear it, same as trialEndsAt, so a canceled Subscription
+        // never shows a Billing Cycle.
+        Subscription subscription = new Subscription(
+                UUID.randomUUID(), customer, plan, SubscriptionState.SUSPENDED, Instant.now());
+
+        subscription.cancel();
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.CANCELED);
+        assertThat(subscription.getBillingCycleAnchor()).isNull();
+    }
+
+    @Test
     void cancelFromActiveWithABillingCycleDefersToPendingCancellation() {
         Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
 

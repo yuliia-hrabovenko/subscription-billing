@@ -8,17 +8,12 @@ import java.util.UUID;
 
 /**
  * {@code POST /api/v1/subscriptions}'s request body, covering all three signup paths.
- * {@code email} is only used to mint a brand-new Customer (no bearer token presented);
- * when a token identifies an already-existing, re-subscribing Customer, it's accepted
- * but ignored rather than made conditionally-required — simpler than branching
- * validation on whether a header was sent, and harmless either way. {@code useTrial}
- * and {@code paymentMethodToken} are ignored for a free-Plan signup and apply only to a
- * paid one: {@code useTrial} chooses between the Trial and immediate-paid path, and
- * {@code paymentMethodToken} is required for either paid path (enforced as a domain
- * rule, not shape validation, since whether it's required depends on which Plan was
- * requested). {@code useTrial} is boxed rather than a primitive specifically so an
- * omitted field (a free-Plan signup body never sends it) binds to null instead of
- * failing deserialization.
+ * {@code email} is accepted but ignored when a bearer token identifies an
+ * already-existing, re-subscribing Customer — simpler than making it conditionally
+ * required. {@code useTrial}/{@code paymentMethodToken} are required only for a paid
+ * Plan, enforced as a domain rule rather than shape validation. {@code useTrial} is
+ * boxed rather than primitive specifically so an omitted field (a free-Plan signup body
+ * never sends it) binds to null instead of failing deserialization.
  */
 public record SignupRequest(@NotNull UUID planId, @NotBlank @Email String email, Boolean useTrial,
                              String paymentMethodToken) {

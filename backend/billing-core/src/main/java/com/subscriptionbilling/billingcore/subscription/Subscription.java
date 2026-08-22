@@ -19,13 +19,9 @@ import java.util.UUID;
 /**
  * Ties a Customer to a Plan and carries the lifecycle state.
  *
- * <p>A Subscription only ever holds one of {@link #trialEndsAt} or {@link
- * #billingCycleAnchor} at a time, never both, and both are null for a free Subscription:
- * a Trial has no Billing Cycle yet (nothing has been charged), and a Billing Cycle only
- * exists once a Subscription is actually paying (free or trialing, neither). {@link
- * #startTrial} and {@link #startPaidImmediately} are the only two ways to create a
- * Subscription with either field populated, so this pairing can't drift apart by
- * accident.
+ * <p>{@link #trialEndsAt} and {@link #billingCycleAnchor} are mutually exclusive and
+ * both null for a free Subscription: a Trial has no Billing Cycle yet, and a Billing
+ * Cycle only exists once a Subscription is actually paying.
  */
 @Entity
 @Table(name = "subscription")
@@ -63,14 +59,9 @@ public class Subscription {
     private Instant createdAt;
 
     /**
-     * Optimistic-locking guard: {@link #cancel()} and {@link #undoCancel()} are the
-     * first Customer-triggered mutations of an already-persisted Subscription (every
-     * earlier write was an insert-only signup). Two concurrent requests without a
-     * shared {@code Idempotency-Key} (idempotency dedup is opt-in, not a substitute for
-     * this) would otherwise both read the same pre-transition state and both commit,
-     * double-applying a transition and writing two {@link
-     * com.subscriptionbilling.audit.AuditLogEntry} rows for one logical action. The
-     * second writer instead fails fast with an optimistic-lock exception.
+     * Optimistic-locking guard against two concurrent {@link #cancel()}/{@link
+     * #undoCancel()} calls (with no shared {@code Idempotency-Key} — dedup is opt-in,
+     * not a substitute for this) both committing against the same pre-transition state.
      */
     @Version
     private Long version;
@@ -88,16 +79,30 @@ public class Subscription {
     }
 
     /**
-     * The {@code [*] -> trialing} edge: a paid-Plan signup that opted into a Trial
-     * instead of being charged immediately. Sets {@link #trialUsed} on this instance
-     * (a fresh Subscription always starts with it {@code false}, regardless of whether
-     * an earlier, now-{@code canceled} Subscription for the same Customer ever ran one)
-     * and leaves {@link #billingCycleAnchor} null, since nothing is charged — and so no
-     * Billing Cycle exists — until the Trial converts.
+     * Package-visible test fixture: no production path creates {@code suspended} yet
+     * (Dunning owns that), so tests need a way to construct one that inherited a
+     * {@link #billingCycleAnchor} from an earlier paid {@code active} life.
      *
-     * @param id         the new Subscription's identity
-     * @param customer   the Customer signing up
-     * @param plan       the paid Plan being trialed
+     * @param id                 the Subscription's identity
+     * @param customer           the owning Customer
+     * @param plan               the current Plan
+     * @param state              the lifecycle state to construct in
+     * @param billingCycleAnchor the Billing Cycle anchor to seed
+     */
+    Subscription(UUID id, Customer customer, Plan plan, SubscriptionState state, Instant billingCycleAnchor) {
+        this(id, customer, plan, state);
+        this.billingCycleAnchor = billingCycleAnchor;
+    }
+
+    /**
+     * The {@code [*] -> trialing} edge. A fresh Subscription always starts with {@link
+     * #trialUsed} {@code false} regardless of whether an earlier, now-{@code canceled}
+     * Subscription for the same Customer ever ran a Trial. {@link #billingCycleAnchor}
+     * stays null: nothing is charged until the Trial converts.
+     *
+     * @param id          the new Subscription's identity
+     * @param customer    the Customer signing up
+     * @param plan        the paid Plan being trialed
      * @param trialEndsAt the instant the Trial converts to a paid charge (or is
      *                    canceled first)
      * @return a new Subscription in {@link SubscriptionState#TRIALING}
@@ -110,16 +115,15 @@ public class Subscription {
     }
 
     /**
-     * The {@code [*] -> active} edge for a paid Plan with no Trial: access and the
-     * Billing Cycle both start now, anchored to the moment this method runs. Money
-     * movement (the actual first charge) is a separate concern owned elsewhere — this
-     * method only establishes the domain-model state that charge will eventually act on.
+     * The {@code [*] -> active} edge for a paid Plan with no Trial. Money movement (the
+     * actual first charge) is a separate concern owned elsewhere — this method only
+     * establishes the domain-model state that charge will eventually act on.
      *
-     * @param id                  the new Subscription's identity
-     * @param customer            the Customer signing up
-     * @param plan                the paid Plan being subscribed to
-     * @param billingCycleAnchor  the instant the Billing Cycle starts (and recurs from,
-     *                            once a billing schedule exists)
+     * @param id                 the new Subscription's identity
+     * @param customer           the Customer signing up
+     * @param plan               the paid Plan being subscribed to
+     * @param billingCycleAnchor the instant the Billing Cycle starts (and recurs from,
+     *                           once a billing schedule exists)
      * @return a new Subscription in {@link SubscriptionState#ACTIVE} with a Billing
      *         Cycle already anchored
      */
@@ -130,25 +134,17 @@ public class Subscription {
     }
 
     /**
-     * Cancels this Subscription, choosing immediate vs. deferred termination by the
-     * state canceled from — the state-machine edges a Customer-initiated cancel can
-     * take, per Invariant 8 ({@code pending_cancellation} reachable only from {@code
-     * active}):
+     * Chooses immediate vs. deferred termination by the state canceled from, per
+     * Invariant 8 ({@code pending_cancellation} reachable only from {@code active}):
      *
      * <ul>
      *     <li>{@code trialing} or {@code suspended} → {@code canceled} immediately:
-     *     neither has paid access worth protecting — a Trial hasn't been charged yet,
-     *     and a suspended Subscription's access is already cut off. Any {@link
-     *     #trialEndsAt} is cleared, since a {@code canceled} Subscription never carries
-     *     one.</li>
-     *     <li>{@code active} with a Billing Cycle ({@link #billingCycleAnchor} set) →
-     *     {@code pending_cancellation}: access continues through the Billing Cycle
-     *     already paid for; the state doesn't reach {@code canceled} until that period
-     *     ends (or is undone first via {@link #undoCancel()}).</li>
+     *     neither has paid access worth protecting.</li>
+     *     <li>{@code active} with a Billing Cycle → {@code pending_cancellation}:
+     *     access continues through the period already paid for.</li>
      *     <li>{@code active} with no Billing Cycle (a free-Plan Subscription) → {@code
-     *     canceled} immediately: there's no paid period to defer to, and nothing ever
-     *     advances a free Subscription out of {@code pending_cancellation} — deferring
-     *     here would strand it there permanently.</li>
+     *     canceled} immediately: nothing ever advances a free Subscription out of
+     *     {@code pending_cancellation}, so deferring would strand it there.</li>
      * </ul>
      *
      * @throws SubscriptionAlreadyPendingCancellationException if a cancellation is
@@ -157,23 +153,22 @@ public class Subscription {
      *         (terminal, Invariant 7)
      */
     public void cancel() {
-        switch (state) {
+        // A switch EXPRESSION assigning directly to state (rather than a switch
+        // statement with a hand-written default) gets compiler-enforced exhaustiveness
+        // over SubscriptionState for free: a future state added here but missed below
+        // fails to compile instead of silently no-op'ing at runtime.
+        state = switch (state) {
             case TRIALING, SUSPENDED -> {
-                state = SubscriptionState.CANCELED;
+                // Both cleared: a canceled Subscription never carries either, regardless
+                // of which one this originating state happened to hold.
                 trialEndsAt = null;
+                billingCycleAnchor = null;
+                yield SubscriptionState.CANCELED;
             }
-            case ACTIVE -> state = billingCycleAnchor != null
-                    ? SubscriptionState.PENDING_CANCELLATION
-                    : SubscriptionState.CANCELED;
+            case ACTIVE -> billingCycleAnchor != null ? SubscriptionState.PENDING_CANCELLATION : SubscriptionState.CANCELED;
             case PENDING_CANCELLATION -> throw new SubscriptionAlreadyPendingCancellationException(id);
             case CANCELED -> throw new SubscriptionAlreadyCanceledException(id);
-            // A plain switch statement over an enum isn't exhaustiveness-checked by the
-            // compiler the way a switch expression is: without this arm, a future
-            // SubscriptionState value added here but missed above would silently no-op
-            // instead of failing loudly — same reasoning as the "system consistency bug,
-            // not a client error" IllegalStateException in SubscriptionService.resolveCustomer.
-            default -> throw new IllegalStateException("Unhandled Subscription state for cancel(): " + state);
-        }
+        };
     }
 
     /**

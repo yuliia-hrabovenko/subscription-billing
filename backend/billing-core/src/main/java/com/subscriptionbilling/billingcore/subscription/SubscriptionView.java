@@ -6,12 +6,10 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Read model for a Subscription fetched by its owning Customer — other modules (e.g.
- * {@code api}'s controller) consume this instead of the {@link Subscription} JPA entity
- * directly, same reasoning as {@link com.subscriptionbilling.billingcore.plan.PlanSummary}
- * for the Plan catalog. {@code trialEndsAt} and {@code billingCycleAnchor} mirror {@link
- * Subscription}'s own fields: at most one is non-null, and both are null for a
- * free-Plan Subscription.
+ * Read model for a Subscription fetched by its owning Customer — other modules consume
+ * this instead of the {@link Subscription} JPA entity directly. {@code trialEndsAt} and
+ * {@code billingCycleAnchor} mirror {@link Subscription}'s own fields: at most one is
+ * non-null.
  */
 public record SubscriptionView(UUID id, SubscriptionState state, PlanRef plan, PlanRef pendingPlanChange,
                                 Instant trialEndsAt, Instant billingCycleAnchor) {
