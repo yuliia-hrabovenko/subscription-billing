@@ -3,6 +3,7 @@ package com.subscriptionbilling.api.subscription;
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
 import com.subscriptionbilling.audit.AuditLogEntry;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
+import com.subscriptionbilling.billingcore.plan.Plan;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,10 +20,11 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Free signup issues a working token, that
- * token fetches the caller's own Subscription, an unauthenticated fetch is rejected, a
- * different Customer's valid token is rejected (403, never 404), and exactly one
- * AuditLogEntry exists for the signup.
+ * Free, Trial, and immediate-paid signup all issue a working token, that token fetches
+ * the caller's own Subscription, an unauthenticated fetch is rejected, a different
+ * Customer's valid token is rejected (403, never 404), a duplicate signup and a
+ * retired-Plan signup are both rejected with a structured error, and exactly one
+ * AuditLogEntry exists per signup.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -52,6 +54,49 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void trialSignupReturnsTrialingWithATrialEndDateAndNoBillingCycle() {
+        String email = "trialist-" + UUID.randomUUID() + "@example.com";
+
+        var body = mvc.post().uri("/api/v1/subscriptions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(trialSignupBody(proPlanId(), email))
+                .assertThat()
+                .hasStatus(201)
+                .bodyJson();
+        body.extractingPath("$.state").asString().isEqualTo("TRIALING");
+        body.extractingPath("$.trialEndsAt").isNotNull();
+        body.extractingPath("$.billingCycle").isNull();
+    }
+
+    @Test
+    void immediatePaidSignupReturnsActiveWithABillingCycleAndNoTrialEndDate() {
+        String email = "immediate-" + UUID.randomUUID() + "@example.com";
+
+        var body = mvc.post().uri("/api/v1/subscriptions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(immediatePaidSignupBody(proPlanId(), email))
+                .assertThat()
+                .hasStatus(201)
+                .bodyJson();
+        body.extractingPath("$.state").asString().isEqualTo("ACTIVE");
+        body.extractingPath("$.trialEndsAt").isNull();
+        body.extractingPath("$.billingCycle.anchoredAt").isNotNull();
+    }
+
+    @Test
+    void paidPlanSignupWithoutAPaymentMethodTokenIsRejectedWith400() {
+        mvc.post().uri("/api/v1/subscriptions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"planId":"%s","email":"%s","useTrial":true}
+                        """.formatted(proPlanId(), "nopayment-" + UUID.randomUUID() + "@example.com"))
+                .assertThat()
+                .hasStatus(400)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("PAYMENT_METHOD_REQUIRED");
+    }
+
+    @Test
     void fetchingOwnSubscriptionWithTheIssuedTokenReturnsItsStateWithNoPendingChangeOrBillingCycle() {
         SignupResponse signup = signUp("owner-" + UUID.randomUUID() + "@example.com");
 
@@ -64,6 +109,7 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
         body.extractingPath("$.plan.code").asString().isEqualTo("free");
         body.extractingPath("$.pendingPlanChange").isNull();
         body.extractingPath("$.billingCycle").isNull();
+        body.extractingPath("$.trialEndsAt").isNull();
     }
 
     @Test
@@ -136,6 +182,43 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void aSecondSignupAttemptUsingTheFirstSignupsTokenIsRejectedWith409() {
+        SignupResponse firstSignup = signUp("repeat-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions")
+                .header("Authorization", "Bearer " + firstSignup.accessToken())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(signupBody(freePlanId(), "ignored-" + UUID.randomUUID() + "@example.com"))
+                .assertThat()
+                .hasStatus(409)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("DUPLICATE_SUBSCRIPTION");
+    }
+
+    @Test
+    void signupTargetingARetiredPlanIsRejectedForBothTheTrialAndImmediatePaidPaths() {
+        Plan retired = new Plan(UUID.randomUUID(), "retired-" + UUID.randomUUID(), "Retired Plan");
+        retired.retireForSignup();
+        planRepository.saveAndFlush(retired);
+
+        mvc.post().uri("/api/v1/subscriptions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(trialSignupBody(retired.getId(), "retired-trial-" + UUID.randomUUID() + "@example.com"))
+                .assertThat()
+                .hasStatus(409)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("PLAN_UNAVAILABLE_FOR_SIGNUP");
+
+        mvc.post().uri("/api/v1/subscriptions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(immediatePaidSignupBody(retired.getId(), "retired-immediate-" + UUID.randomUUID() + "@example.com"))
+                .assertThat()
+                .hasStatus(409)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("PLAN_UNAVAILABLE_FOR_SIGNUP");
+    }
+
+    @Test
     void signupWritesExactlyOneAuditLogEntryForTheNewSubscription() {
         SignupResponse signup = signUp("audited-" + UUID.randomUUID() + "@example.com");
 
@@ -167,9 +250,25 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
         return planRepository.findByCode("free").orElseThrow().getId();
     }
 
+    private UUID proPlanId() {
+        return planRepository.findByCode("pro").orElseThrow().getId();
+    }
+
     private String signupBody(UUID planId, String email) {
         return """
                 {"planId":"%s","email":"%s"}
+                """.formatted(planId, email);
+    }
+
+    private String trialSignupBody(UUID planId, String email) {
+        return """
+                {"planId":"%s","email":"%s","useTrial":true,"paymentMethodToken":"gw_tok_abc123"}
+                """.formatted(planId, email);
+    }
+
+    private String immediatePaidSignupBody(UUID planId, String email) {
+        return """
+                {"planId":"%s","email":"%s","useTrial":false,"paymentMethodToken":"gw_tok_abc123"}
                 """.formatted(planId, email);
     }
 }
