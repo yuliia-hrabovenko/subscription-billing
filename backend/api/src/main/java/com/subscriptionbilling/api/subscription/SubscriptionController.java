@@ -72,4 +72,14 @@ public class SubscriptionController {
                 id, authenticatedCustomerId, idempotencyKey, CorrelationIds.current());
         return SubscriptionResponse.from(view);
     }
+
+    @PostMapping("/{id}/plan-change")
+    public SubscriptionResponse schedulePlanChange(@PathVariable UUID id, @RequestBody @Valid PlanChangeRequest request,
+                                                     @AuthenticationPrincipal Jwt jwt,
+                                                     @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        UUID authenticatedCustomerId = UUID.fromString(jwt.getSubject());
+        SubscriptionView view = subscriptionService.schedulePlanChange(
+                id, authenticatedCustomerId, request.planId(), idempotencyKey, CorrelationIds.current());
+        return SubscriptionResponse.from(view);
+    }
 }

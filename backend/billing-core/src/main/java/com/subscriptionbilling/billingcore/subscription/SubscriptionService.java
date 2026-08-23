@@ -7,6 +7,7 @@ import com.subscriptionbilling.billingcore.auth.CustomerTokenIssuer;
 import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.customer.CustomerRepository;
 import com.subscriptionbilling.billingcore.idempotency.IdempotencyService;
+import com.subscriptionbilling.billingcore.plan.Plan;
 import com.subscriptionbilling.billingcore.plan.PlanCatalogService;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
 import com.subscriptionbilling.billingcore.plan.PlanSummary;
@@ -43,6 +44,9 @@ public class SubscriptionService {
 
     /** {@link IdempotencyService} operation name for {@link #undoCancel}. */
     static final String UNDO_CANCEL_OPERATION = "undo-cancel";
+
+    /** {@link IdempotencyService} operation name for {@link #schedulePlanChange}. */
+    static final String PLAN_CHANGE_OPERATION = "plan-change";
 
     private final CustomerRepository customerRepository;
     private final PlanRepository planRepository;
@@ -199,6 +203,43 @@ public class SubscriptionService {
                                         String correlationId) {
         return applyTransition(subscriptionId, authenticatedCustomerId, idempotencyKey, UNDO_CANCEL_OPERATION,
                 Subscription::undoCancel, correlationId);
+    }
+
+    /**
+     * See {@link Subscription#schedulePlanChange} for the free-to-paid-immediate vs.
+     * paid-to-paid/paid-to-free-deferred split. Idempotency handling mirrors {@link
+     * #cancel} — see {@link #applyTransition}. The target Plan's availability is checked
+     * inside the same guarded section as the transition itself, so a rejection here also
+     * releases a just-recorded idempotency key rather than burning it.
+     *
+     * @param subscriptionId          the Subscription to change the Plan of
+     * @param authenticatedCustomerId the Customer the caller's bearer token identifies
+     * @param targetPlanId            the Plan being switched to
+     * @param idempotencyKey          the client-supplied {@code Idempotency-Key} header
+     *                                value, or null/blank if none was sent
+     * @param correlationId           rides along on the written {@link
+     *                                com.subscriptionbilling.audit.AuditLogEntry}
+     * @return the Subscription's state after this request — either the just-applied
+     *         change, or (for a deduplicated retry) its unchanged current state
+     * @throws SubscriptionAccessDeniedException             if the Subscription doesn't
+     *         exist or doesn't belong to this Customer
+     * @throws PlanUnavailableForSignupException             if the target Plan doesn't
+     *         exist, is retired, or has no current price
+     * @throws SubscriptionNotEligibleForPlanChangeException if not currently {@code
+     *         ACTIVE}
+     */
+    @Transactional
+    public SubscriptionView schedulePlanChange(UUID subscriptionId, UUID authenticatedCustomerId, UUID targetPlanId,
+                                                String idempotencyKey, String correlationId) {
+        Instant now = Instant.now(clock);
+        return applyTransition(subscriptionId, authenticatedCustomerId, idempotencyKey, PLAN_CHANGE_OPERATION,
+                subscription -> {
+                    PlanSummary targetPlanSummary = planCatalogService.findAvailablePlan(targetPlanId)
+                            .orElseThrow(() -> new PlanUnavailableForSignupException(targetPlanId));
+                    Plan targetPlan = planRepository.getReferenceById(targetPlanId);
+                    boolean targetPlanIsFree = targetPlanSummary.currentPrice().signum() == 0;
+                    subscription.schedulePlanChange(targetPlan, targetPlanIsFree, now);
+                }, correlationId);
     }
 
     /**

@@ -186,6 +186,46 @@ public class Subscription {
         state = SubscriptionState.ACTIVE;
     }
 
+    /**
+     * The paid-to-paid, paid-to-free, and free-to-paid plan-change edges. {@code state}
+     * never changes (plan changes aren't part of the state diagram) — only reachable
+     * from {@code ACTIVE}, the one state with current paid or free access to change out
+     * of.
+     *
+     * <p>No existing Billing Cycle ({@link #billingCycleAnchor} null, i.e. currently on
+     * the free Plan) means free-to-X: applies immediately, moving onto {@code
+     * targetPlan} now. A Billing Cycle is opened, anchored to {@code now}, only if
+     * {@code targetPlanIsFree} is false — free-to-free must not open one (Invariant 5:
+     * a Billing Cycle exists only while on a paid Plan). An existing Billing Cycle
+     * (currently paid) means paid-to-paid or paid-to-free: deferred — sets {@link
+     * #pendingPlanChange} to {@code targetPlan}, atomically replacing whatever was
+     * already pending (Invariant 4). Applying a deferred change at the next Billing
+     * Cycle boundary is the Billing Execution Engine's job, out of scope here.
+     *
+     * @param targetPlan       the Plan being switched to (upgrade, downgrade, or a
+     *                         downgrade to Free)
+     * @param targetPlanIsFree whether {@code targetPlan}'s current price is zero;
+     *                         decides, on the currently-free path only, whether this
+     *                         change opens a Billing Cycle
+     * @param now              the instant to anchor a new Billing Cycle to, on the
+     *                         free-to-paid path only
+     * @throws SubscriptionNotEligibleForPlanChangeException if not currently {@code
+     *         ACTIVE}
+     */
+    public void schedulePlanChange(Plan targetPlan, boolean targetPlanIsFree, Instant now) {
+        if (state != SubscriptionState.ACTIVE) {
+            throw new SubscriptionNotEligibleForPlanChangeException(id, state);
+        }
+        if (billingCycleAnchor == null) {
+            plan = targetPlan;
+            if (!targetPlanIsFree) {
+                billingCycleAnchor = now;
+            }
+        } else {
+            pendingPlanChange = targetPlan;
+        }
+    }
+
     public UUID getId() {
         return id;
     }
