@@ -14,6 +14,7 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.UUID;
 
 /**
@@ -55,6 +56,16 @@ public class Subscription {
     @Column(name = "billing_cycle_anchor")
     private Instant billingCycleAnchor;
 
+    /**
+     * The date the billing job's due-Subscription scan compares against ({@code <=
+     * today}, never {@code == today} — see the billing-job module's {@code
+     * DueSubscriptionsPort}). Null for a Subscription never on a paid Plan, or one
+     * that hasn't had its first charge scheduled yet; no production path sets this
+     * field yet.
+     */
+    @Column(name = "due_date")
+    private LocalDate dueDate;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -92,6 +103,23 @@ public class Subscription {
     Subscription(UUID id, Customer customer, Plan plan, SubscriptionState state, Instant billingCycleAnchor) {
         this(id, customer, plan, state);
         this.billingCycleAnchor = billingCycleAnchor;
+    }
+
+    /**
+     * Package-visible test fixture: no production path sets {@link #dueDate} yet, so
+     * tests need a way to construct a Subscription with a specific due date to prove
+     * the billing job's due-Subscription selection query.
+     *
+     * @param id                 the Subscription's identity
+     * @param customer           the owning Customer
+     * @param plan               the current Plan
+     * @param state              the lifecycle state to construct in
+     * @param billingCycleAnchor the Billing Cycle anchor to seed
+     * @param dueDate            the due date to seed
+     */
+    Subscription(UUID id, Customer customer, Plan plan, SubscriptionState state, Instant billingCycleAnchor, LocalDate dueDate) {
+        this(id, customer, plan, state, billingCycleAnchor);
+        this.dueDate = dueDate;
     }
 
     /**
@@ -273,6 +301,10 @@ public class Subscription {
 
     public Instant getBillingCycleAnchor() {
         return billingCycleAnchor;
+    }
+
+    public LocalDate getDueDate() {
+        return dueDate;
     }
 
     public Instant getCreatedAt() {
