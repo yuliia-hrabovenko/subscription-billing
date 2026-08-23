@@ -122,4 +122,70 @@ class SubscriptionTest {
 
         assertThat(subscription.getState()).isEqualTo(originatingState);
     }
+
+    @Test
+    void schedulePlanChangeFromActiveWithABillingCycleSetsPendingPlanChangeAndLeavesTheCurrentPlanAndStateUnchanged() {
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
+        Plan targetPlan = new Plan(UUID.randomUUID(), "enterprise", "Enterprise");
+
+        subscription.schedulePlanChange(targetPlan, false, Instant.now());
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(subscription.getPlan()).isEqualTo(plan);
+        assertThat(subscription.getPendingPlanChange()).isEqualTo(targetPlan);
+    }
+
+    @Test
+    void schedulePlanChangeToFreeFromActiveWithABillingCycleSetsPendingPlanChangeWithoutCancelingTheSubscription() {
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
+        Plan freePlan = new Plan(UUID.randomUUID(), "free", "Free");
+
+        subscription.schedulePlanChange(freePlan, true, Instant.now());
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(subscription.getPlan()).isEqualTo(plan);
+        assertThat(subscription.getPendingPlanChange()).isEqualTo(freePlan);
+    }
+
+    @Test
+    void schedulingASecondPlanChangeWhileOneIsAlreadyPendingReplacesTheFirst() {
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
+        Plan firstTarget = new Plan(UUID.randomUUID(), "enterprise", "Enterprise");
+        Plan secondTarget = new Plan(UUID.randomUUID(), "free", "Free");
+        subscription.schedulePlanChange(firstTarget, false, Instant.now());
+
+        subscription.schedulePlanChange(secondTarget, true, Instant.now());
+
+        assertThat(subscription.getPendingPlanChange()).isEqualTo(secondTarget);
+    }
+
+    @Test
+    void schedulePlanChangeFromActiveWithNoBillingCycleAppliesImmediatelyAndOpensABillingCycleAnchoredToNow() {
+        // A free-Plan Subscription is ACTIVE with no Billing Cycle — the one exception to
+        // "next cycle": free-to-paid applies now instead of setting pendingPlanChange.
+        Subscription subscription = subscriptionIn(SubscriptionState.ACTIVE);
+        Plan targetPlan = new Plan(UUID.randomUUID(), "pro", "Pro");
+        Instant now = Instant.now();
+
+        subscription.schedulePlanChange(targetPlan, false,now);
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(subscription.getPlan()).isEqualTo(targetPlan);
+        assertThat(subscription.getPendingPlanChange()).isNull();
+        assertThat(subscription.getBillingCycleAnchor()).isEqualTo(now);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = SubscriptionState.class, names = "ACTIVE", mode = EnumSource.Mode.EXCLUDE)
+    void schedulePlanChangeFromAnyNonActiveStateIsRejected(SubscriptionState originatingState) {
+        Subscription subscription = subscriptionIn(originatingState);
+        Plan targetPlan = new Plan(UUID.randomUUID(), "pro", "Pro");
+
+        assertThatThrownBy(() -> subscription.schedulePlanChange(targetPlan, false, Instant.now()))
+                .isInstanceOf(SubscriptionNotEligibleForPlanChangeException.class);
+
+        // Rejected transitions never mutate state — still exactly where it started.
+        assertThat(subscription.getState()).isEqualTo(originatingState);
+        assertThat(subscription.getPendingPlanChange()).isNull();
+    }
 }

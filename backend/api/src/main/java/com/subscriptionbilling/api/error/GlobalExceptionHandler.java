@@ -6,6 +6,7 @@ import com.subscriptionbilling.billingcore.subscription.PaymentMethodRequiredExc
 import com.subscriptionbilling.billingcore.subscription.SubscriptionAccessDeniedException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionAlreadyCanceledException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionAlreadyPendingCancellationException;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionNotEligibleForPlanChangeException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionNotPendingCancellationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -105,6 +106,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<Object> handleSubscriptionNotPendingCancellation(
             SubscriptionNotPendingCancellationException ex) {
         return respond(HttpStatus.CONFLICT, "SUBSCRIPTION_NOT_PENDING_CANCELLATION", ex.getMessage());
+    }
+
+    @ExceptionHandler(SubscriptionNotEligibleForPlanChangeException.class)
+    public ResponseEntity<Object> handleSubscriptionNotEligibleForPlanChange(
+            SubscriptionNotEligibleForPlanChangeException ex) {
+        return respond(HttpStatus.CONFLICT, "SUBSCRIPTION_NOT_ELIGIBLE_FOR_PLAN_CHANGE", ex.getMessage());
     }
 
     /**

@@ -516,4 +516,156 @@ class SubscriptionServiceTest {
         assertThat(view.state()).isEqualTo(SubscriptionState.PENDING_CANCELLATION);
         verify(auditLogEntryRepository, never()).append(any());
     }
+
+    @Test
+    void schedulingAPlanChangeFromActiveWithABillingCycleSetsPendingPlanChangeAndWritesAnAuditLogEntry() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        UUID targetPlanId = UUID.randomUUID();
+        Plan enterprisePlan = new Plan(targetPlanId, "enterprise", "Enterprise");
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(customerId, "upgrader@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(planCatalogService.findAvailablePlan(targetPlanId))
+                .thenReturn(Optional.of(new PlanSummary(targetPlanId, "enterprise", "Enterprise", new BigDecimal("49.00"))));
+        when(planRepository.getReferenceById(targetPlanId)).thenReturn(enterprisePlan);
+
+        SubscriptionView view = service().schedulePlanChange(subscriptionId, customerId, targetPlanId, null, "corr-plan-1");
+
+        // Current plan/state stay put; only pendingPlanChange reflects the scheduled edge.
+        assertThat(view.state()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(view.plan().code()).isEqualTo("pro");
+        assertThat(view.pendingPlanChange().code()).isEqualTo("enterprise");
+
+        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
+        assertThat(auditEntry.getValue().getNewState()).isEqualTo("ACTIVE");
+        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-plan-1");
+    }
+
+    @Test
+    void schedulingADowngradeToFreeFromActiveWithABillingCycleSetsPendingPlanChangeWithoutCancelingTheSubscription() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(customerId, "downgrader@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(planCatalogService.findAvailablePlan(planId))
+                .thenReturn(Optional.of(new PlanSummary(planId, "free", "Free", new BigDecimal("0.00"))));
+        when(planRepository.getReferenceById(planId)).thenReturn(freePlan);
+
+        SubscriptionView view = service().schedulePlanChange(subscriptionId, customerId, planId, null, "corr-plan-2");
+
+        assertThat(view.state()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(view.plan().code()).isEqualTo("pro");
+        assertThat(view.pendingPlanChange().code()).isEqualTo("free");
+    }
+
+    @Test
+    void schedulingAPlanChangeFromActiveWithNoBillingCycleAppliesImmediatelyAndOpensABillingCycleAnchoredToNow() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "free-upgrader@example.com"), freePlan, SubscriptionState.ACTIVE);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(planCatalogService.findAvailablePlan(planId))
+                .thenReturn(Optional.of(new PlanSummary(planId, "pro", "Pro", new BigDecimal("19.00"))));
+        when(planRepository.getReferenceById(planId)).thenReturn(proPlan);
+
+        SubscriptionView view = service().schedulePlanChange(subscriptionId, customerId, planId, null, "corr-plan-3");
+
+        assertThat(view.state()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(view.plan().code()).isEqualTo("pro");
+        assertThat(view.pendingPlanChange()).isNull();
+        assertThat(view.billingCycleAnchor()).isEqualTo(FIXED_NOW);
+    }
+
+    @Test
+    void schedulingAPlanChangeFromActiveWithNoBillingCycleToAFreeTargetSwapsThePlanWithoutOpeningABillingCycle() {
+        // Invariant 5 (a Billing Cycle exists only on a paid Plan): a free subscriber
+        // "changing" to a zero-priced target — including re-selecting the free Plan
+        // already active — must not open one, unlike the paid-target case above.
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        UUID freeTargetId = UUID.randomUUID();
+        Plan anotherFreePlan = new Plan(freeTargetId, "free", "Free");
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "free-to-free@example.com"), freePlan, SubscriptionState.ACTIVE);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(planCatalogService.findAvailablePlan(freeTargetId))
+                .thenReturn(Optional.of(new PlanSummary(freeTargetId, "free", "Free", new BigDecimal("0.00"))));
+        when(planRepository.getReferenceById(freeTargetId)).thenReturn(anotherFreePlan);
+
+        SubscriptionView view = service().schedulePlanChange(subscriptionId, customerId, freeTargetId, null, "corr-plan-3b");
+
+        assertThat(view.state()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(view.plan().code()).isEqualTo("free");
+        assertThat(view.pendingPlanChange()).isNull();
+        assertThat(view.billingCycleAnchor()).isNull();
+    }
+
+    @Test
+    void schedulingAPlanChangeTargetingARetiredPlanIsRejected() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        UUID retiredPlanId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(customerId, "retired-target@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(planCatalogService.findAvailablePlan(retiredPlanId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().schedulePlanChange(subscriptionId, customerId, retiredPlanId, null, "corr-plan-4"))
+                .isInstanceOf(PlanUnavailableForSignupException.class);
+
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void schedulingAPlanChangeOnATrialingSubscriptionIsRejected() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startTrial(
+                subscriptionId, new Customer(customerId, "trialist@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(planCatalogService.findAvailablePlan(planId))
+                .thenReturn(Optional.of(new PlanSummary(planId, "enterprise", "Enterprise", new BigDecimal("49.00"))));
+
+        assertThatThrownBy(() -> service().schedulePlanChange(subscriptionId, customerId, planId, null, "corr-plan-5"))
+                .isInstanceOf(SubscriptionNotEligibleForPlanChangeException.class);
+
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void schedulingAPlanChangeForAWrongOwnerIsRejectedWithAccessDenied() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(UUID.randomUUID(), "owner@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().schedulePlanChange(subscriptionId, UUID.randomUUID(), planId, null, "corr-plan-6"))
+                .isInstanceOf(SubscriptionAccessDeniedException.class);
+
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void aRepeatedPlanChangeWithTheSameIdempotencyKeyDoesNotReapplyOrWriteASecondAuditEntry() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(customerId, "retry@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(idempotencyService.recordIfNew(customerId, SubscriptionService.PLAN_CHANGE_OPERATION, "key-5"))
+                .thenReturn(false);
+
+        SubscriptionView view = service().schedulePlanChange(subscriptionId, customerId, planId, "key-5", "corr-plan-7");
+
+        // Untouched: no pendingPlanChange — the transition was never re-run for this
+        // deduplicated retry.
+        assertThat(view.pendingPlanChange()).isNull();
+        verify(auditLogEntryRepository, never()).append(any());
+        verify(planCatalogService, never()).findAvailablePlan(any());
+    }
 }

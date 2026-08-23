@@ -8,6 +8,8 @@ import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.customer.CustomerRepository;
 import com.subscriptionbilling.billingcore.plan.Plan;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
+import com.subscriptionbilling.billingcore.plan.PriceVersion;
+import com.subscriptionbilling.billingcore.plan.PriceVersionRepository;
 import com.subscriptionbilling.billingcore.subscription.Subscription;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionRepository;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionState;
@@ -20,6 +22,8 @@ import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -43,6 +47,9 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private PlanRepository planRepository;
+
+    @Autowired
+    private PriceVersionRepository priceVersionRepository;
 
     @Autowired
     private CustomerRepository customerRepository;
@@ -426,6 +433,168 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
                 .extractingPath("$.error.code").asString().isEqualTo("FORBIDDEN");
     }
 
+    @Test
+    void schedulingAnUpgradeBetweenTwoPaidPlansSetsPendingPlanChangeLeavingTheCurrentPlanUnchangedVerifiedByFollowUpGet() {
+        SignupResponse signup = immediatePaidSignUp("upgrader-" + UUID.randomUUID() + "@example.com");
+        Plan enterprise = seedPaidPlan("enterprise-" + UUID.randomUUID(), "Enterprise", new BigDecimal("49.00"));
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/plan-change", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(planChangeBody(enterprise.getId()))
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.pendingPlanChange.code").asString().isEqualTo(enterprise.getCode());
+
+        var body = mvc.get().uri("/api/v1/subscriptions/{id}", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .bodyJson();
+        body.extractingPath("$.plan.code").asString().isEqualTo("pro");
+        body.extractingPath("$.pendingPlanChange.id").asString().isEqualTo(enterprise.getId().toString());
+    }
+
+    @Test
+    void schedulingADowngradeToFreeSetsPendingPlanChangeToFreeWithoutCancelingTheSubscription() {
+        SignupResponse signup = immediatePaidSignUp("downgrader-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/plan-change", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(planChangeBody(freePlanId()))
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("ACTIVE");
+
+        var body = mvc.get().uri("/api/v1/subscriptions/{id}", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .bodyJson();
+        body.extractingPath("$.state").asString().isEqualTo("ACTIVE");
+        body.extractingPath("$.plan.code").asString().isEqualTo("pro");
+        body.extractingPath("$.pendingPlanChange.code").asString().isEqualTo("free");
+    }
+
+    @Test
+    void aFreeSubscriberUpgradingToAPaidPlanChangesThePlanImmediatelyAndOpensABillingCycleAnchoredToTodayVerifiedByFollowUpGet() {
+        SignupResponse signup = signUp("free-upgrader-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/plan-change", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(planChangeBody(proPlanId()))
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.plan.code").asString().isEqualTo("pro");
+
+        var body = mvc.get().uri("/api/v1/subscriptions/{id}", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .bodyJson();
+        body.extractingPath("$.plan.code").asString().isEqualTo("pro");
+        body.extractingPath("$.pendingPlanChange").isNull();
+        body.extractingPath("$.billingCycle.anchoredAt").isNotNull();
+    }
+
+    @Test
+    void schedulingASecondPlanChangeWhileOneIsAlreadyPendingReplacesTheFirstVerifiedByFollowUpGet() {
+        SignupResponse signup = immediatePaidSignUp("replace-pending-" + UUID.randomUUID() + "@example.com");
+        Plan enterprise = seedPaidPlan("enterprise-" + UUID.randomUUID(), "Enterprise", new BigDecimal("49.00"));
+        mvc.post().uri("/api/v1/subscriptions/{id}/plan-change", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(planChangeBody(enterprise.getId()))
+                .assertThat().hasStatusOk();
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/plan-change", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(planChangeBody(freePlanId()))
+                .assertThat().hasStatusOk();
+
+        mvc.get().uri("/api/v1/subscriptions/{id}", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .bodyJson()
+                .extractingPath("$.pendingPlanChange.code").asString().isEqualTo("free");
+    }
+
+    @Test
+    void aPlanChangeTargetingARetiredPlanIsRejectedWithAStructuredError() {
+        SignupResponse signup = immediatePaidSignUp("retired-target-" + UUID.randomUUID() + "@example.com");
+        Plan retired = new Plan(UUID.randomUUID(), "retired-" + UUID.randomUUID(), "Retired Plan");
+        retired.retireForSignup();
+        planRepository.saveAndFlush(retired);
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/plan-change", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(planChangeBody(retired.getId()))
+                .assertThat()
+                .hasStatus(409)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("PLAN_UNAVAILABLE_FOR_SIGNUP");
+    }
+
+    @Test
+    void aPlanChangeRequestOnATrialingSubscriptionIsRejectedWithAStructured409() {
+        SignupResponse signup = trialSignUp("trialing-plan-change-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/plan-change", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(planChangeBody(freePlanId()))
+                .assertThat()
+                .hasStatus(409)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("SUBSCRIPTION_NOT_ELIGIBLE_FOR_PLAN_CHANGE");
+    }
+
+    @Test
+    void aRepeatedPlanChangeRequestWithTheSameIdempotencyKeyDoesNotDoubleApply() {
+        SignupResponse signup = immediatePaidSignUp("plan-change-idem-" + UUID.randomUUID() + "@example.com");
+        String idempotencyKey = "plan-change-idem-key-" + UUID.randomUUID();
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/plan-change", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .header("Idempotency-Key", idempotencyKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(planChangeBody(freePlanId()))
+                .assertThat().hasStatusOk();
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/plan-change", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .header("Idempotency-Key", idempotencyKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(planChangeBody(freePlanId()))
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.pendingPlanChange.code").asString().isEqualTo("free");
+
+        List<AuditLogEntry> entries = auditLogEntryRepository.findBySubscriptionId(signup.subscriptionId());
+        // One for the signup, one for the single (deduplicated) plan change.
+        assertThat(entries).hasSize(2);
+    }
+
+    @Test
+    void planChangeForAWrongOwnerIsRejectedWith403() {
+        SignupResponse owner = immediatePaidSignUp("plan-change-victim-" + UUID.randomUUID() + "@example.com");
+        SignupResponse otherCustomer = signUp("plan-change-attacker-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/plan-change", owner.subscriptionId())
+                .header("Authorization", "Bearer " + otherCustomer.accessToken())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(planChangeBody(freePlanId()))
+                .assertThat()
+                .hasStatus(403)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("FORBIDDEN");
+    }
+
     private SignupResponse signUp(String email) {
         MvcTestResult result = mvc.post().uri("/api/v1/subscriptions")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -482,6 +651,25 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
 
     private UUID proPlanId() {
         return planRepository.findByCode("pro").orElseThrow().getId();
+    }
+
+    /**
+     * The seeded catalog (V7 migration) only has {@code free} and {@code pro} — a
+     * paid-to-paid plan change needs a third, already-available (non-retired, priced)
+     * Plan, seeded directly rather than through the signup-only catalog.
+     */
+    private Plan seedPaidPlan(String code, String name, BigDecimal amount) {
+        Plan plan = new Plan(UUID.randomUUID(), code, name);
+        planRepository.saveAndFlush(plan);
+        priceVersionRepository.saveAndFlush(
+                new PriceVersion(UUID.randomUUID(), plan, amount, Instant.parse("2026-01-01T00:00:00Z")));
+        return plan;
+    }
+
+    private String planChangeBody(UUID planId) {
+        return """
+                {"planId":"%s"}
+                """.formatted(planId);
     }
 
     private String signupBody(UUID planId, String email) {
