@@ -188,4 +188,37 @@ class SubscriptionTest {
         assertThat(subscription.getState()).isEqualTo(originatingState);
         assertThat(subscription.getPendingPlanChange()).isNull();
     }
+
+    @Test
+    void suspendFromTrialingTransitionsImmediatelyToSuspended() {
+        Subscription subscription = Subscription.startTrial(UUID.randomUUID(), customer, plan, Instant.now());
+
+        subscription.suspend();
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.SUSPENDED);
+    }
+
+    @Test
+    void suspendFromActiveTransitionsImmediatelyToSuspendedAndKeepsTheBillingCycleAnchor() {
+        Instant billingCycleAnchor = Instant.now();
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, billingCycleAnchor);
+
+        subscription.suspend();
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.SUSPENDED);
+        // Unlike cancel(), suspend() must not clear the anchor: a later successful
+        // Payment Attempt restores active without re-anchoring the Billing Cycle.
+        assertThat(subscription.getBillingCycleAnchor()).isEqualTo(billingCycleAnchor);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = SubscriptionState.class, names = {"TRIALING", "ACTIVE"}, mode = EnumSource.Mode.EXCLUDE)
+    void suspendFromAnyOtherStateIsRejected(SubscriptionState originatingState) {
+        Subscription subscription = subscriptionIn(originatingState);
+
+        assertThatThrownBy(subscription::suspend).isInstanceOf(SubscriptionNotEligibleForSuspensionException.class);
+
+        // Rejected transitions never mutate state — still exactly where it started.
+        assertThat(subscription.getState()).isEqualTo(originatingState);
+    }
 }

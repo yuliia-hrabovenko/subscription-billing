@@ -668,4 +668,66 @@ class SubscriptionServiceTest {
         verify(auditLogEntryRepository, never()).append(any());
         verify(planCatalogService, never()).findAvailablePlan(any());
     }
+
+    @Test
+    void suspendFromTrialingTransitionsImmediatelyToSuspendedAndWritesASystemAuditLogEntry() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startTrial(
+                subscriptionId, new Customer(UUID.randomUUID(), "trialist@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        service().suspend(subscriptionId, "corr-suspend-1");
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.SUSPENDED);
+        verify(subscriptionRepository).saveAndFlush(subscription);
+
+        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.SYSTEM);
+        assertThat(auditEntry.getValue().getOldState()).isEqualTo("TRIALING");
+        assertThat(auditEntry.getValue().getNewState()).isEqualTo("SUSPENDED");
+        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-suspend-1");
+    }
+
+    @Test
+    void suspendFromActiveTransitionsImmediatelyToSuspendedAndWritesASystemAuditLogEntry() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(UUID.randomUUID(), "active@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        service().suspend(subscriptionId, "corr-suspend-2");
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.SUSPENDED);
+
+        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
+        assertThat(auditEntry.getValue().getNewState()).isEqualTo("SUSPENDED");
+    }
+
+    @Test
+    void suspendOnAnIneligibleStateIsRejectedAndWritesNoAuditLogEntry() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(UUID.randomUUID(), "canceled@example.com"), proPlan, SubscriptionState.CANCELED);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().suspend(subscriptionId, "corr-suspend-3"))
+                .isInstanceOf(SubscriptionNotEligibleForSuspensionException.class);
+
+        verify(subscriptionRepository, never()).saveAndFlush(any());
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void suspendOfANonexistentSubscriptionFailsFastInsteadOfSilentlyNoOping() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().suspend(subscriptionId, "corr-suspend-4"))
+                .isInstanceOf(IllegalStateException.class);
+
+        verify(auditLogEntryRepository, never()).append(any());
+    }
 }
