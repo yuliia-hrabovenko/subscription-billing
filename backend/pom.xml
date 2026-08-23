@@ -26,6 +26,7 @@
         <module>audit</module>
         <module>billing-core</module>
         <module>billing-job</module>
+        <module>dunning</module>
         <module>invoicing</module>
         <module>notifications</module>
         <module>api</module>

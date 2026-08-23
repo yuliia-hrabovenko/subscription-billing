@@ -243,6 +243,30 @@ public class SubscriptionService {
     }
 
     /**
+     * Suspends a Subscription immediately, per {@link Subscription#suspend()}'s
+     * business rule ("first failed charge suspends, no grace period"). Unlike {@link
+     * #cancel}/{@link #undoCancel}, this is system-triggered — there is no
+     * authenticated Customer to check ownership against, and no Idempotency-Key.
+     *
+     * @param subscriptionId the Subscription to suspend
+     * @param correlationId  rides along on the written {@link
+     *                       com.subscriptionbilling.audit.AuditLogEntry}
+     * @throws SubscriptionNotEligibleForSuspensionException if not currently {@code
+     *         trialing} or {@code active}
+     */
+    @Transactional
+    public void suspend(UUID subscriptionId, String correlationId) {
+        Subscription subscription = subscriptionRepository.findById(subscriptionId)
+                .orElseThrow(() -> new IllegalStateException("Subscription " + subscriptionId + " does not exist"));
+        SubscriptionState oldState = subscription.getState();
+        subscription.suspend();
+        subscriptionRepository.saveAndFlush(subscription);
+        auditLogEntryRepository.append(new AuditLogEntry(
+                UUID.randomUUID(), subscription.getId(), ActorType.SYSTEM, oldState.name(),
+                subscription.getState().name(), correlationId));
+    }
+
+    /**
      * Shared skeleton behind {@link #cancel} and {@link #undoCancel}.
      *
      * <p>An {@code idempotencyKey} is recorded (committed, independent of this method's

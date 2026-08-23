@@ -226,6 +226,23 @@ public class Subscription {
         }
     }
 
+    /**
+     * The {@code trialing -> suspended} and {@code active -> suspended} edges, taken
+     * when a renewal or Trial-conversion charge fails. No grace period: this is the
+     * only way a Subscription reaches {@code suspended}. {@link #billingCycleAnchor}
+     * is left untouched, so a later successful Payment Attempt can restore {@code
+     * active} without re-anchoring the Billing Cycle.
+     *
+     * @throws SubscriptionNotEligibleForSuspensionException if not currently {@code
+     *         trialing} or {@code active}
+     */
+    public void suspend() {
+        if (state != SubscriptionState.TRIALING && state != SubscriptionState.ACTIVE) {
+            throw new SubscriptionNotEligibleForSuspensionException(id, state);
+        }
+        state = SubscriptionState.SUSPENDED;
+    }
+
     public UUID getId() {
         return id;
     }
