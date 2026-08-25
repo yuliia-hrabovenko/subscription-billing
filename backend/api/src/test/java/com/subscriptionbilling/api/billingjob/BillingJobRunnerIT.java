@@ -133,6 +133,37 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void aSuccessfulChargeCatchingUpAMissedRunAdvancesFromTheOriginalDueDateNotFromToday() {
+        // Anchored to the 15th; due_date is well in the past by the time this run picks
+        // it up, simulating a run missed by a deploy or outage. The next due date must
+        // land on the 15th of the following month -- derived from the original due date,
+        // never from whatever day the catch-up run actually executes on.
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        Subscription subscription = seedDueSubscription(
+                proPlan, Instant.parse("2026-06-15T00:00:00Z"), LocalDate.of(2026, 6, 15));
+
+        billingJobRunner.run();
+
+        Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
+        assertThat(reloaded.getDueDate()).isEqualTo(LocalDate.of(2026, 7, 15));
+    }
+
+    @Test
+    void aSuccessfulChargeCatchingUpAMissedRunForAMonthEndAnchoredSubscriptionStillClampsCorrectly() {
+        // Combines the catch-up guarantee above with month-end clamping: anchored to the
+        // 31st, still overdue when this run finally catches it up, must clamp into June's
+        // last day (30) rather than drifting to whatever day the catch-up run executes on.
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        Subscription subscription = seedDueSubscription(
+                proPlan, Instant.parse("2026-05-31T00:00:00Z"), LocalDate.of(2026, 5, 31));
+
+        billingJobRunner.run();
+
+        Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
+        assertThat(reloaded.getDueDate()).isEqualTo(LocalDate.of(2026, 6, 30));
+    }
+
+    @Test
     void aSuccessfulChargeIncrementsTheSubscriptionsProcessedCounterAndRecordsTheJobDurationTimer() {
         // Deltas rather than exact counts: other test methods in this class leave their
         // own seeded Subscriptions behind in the shared Testcontainers Postgres (see the
