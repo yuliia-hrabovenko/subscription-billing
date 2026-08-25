@@ -6,7 +6,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 /**
  * Widens entity/repository scanning past {@link ApiApplication}'s own package to every
- * module sharing this database (billing-core, audit, notifications) — Spring Boot's
+ * module sharing this database (billing-core, audit, notifications, invoicing) — Spring Boot's
  * default is scoped to the {@code @SpringBootApplication} class's own package regardless
  * of {@code scanBasePackages}, a separate, narrower mechanism from component scanning.
  *

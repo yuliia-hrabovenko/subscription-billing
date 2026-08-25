@@ -34,4 +34,38 @@ class PriceVersionRepositoryTest extends AbstractPostgresIntegrationTest {
         assertThat(found.get().getAmount()).isEqualByComparingTo("99.0000");
         assertThat(found.get().getPlan().getId()).isEqualTo(plan.getId());
     }
+
+    @Test
+    void findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDescReturnsTheMostRecentEffectivePrice() {
+        Plan plan = planRepository.saveAndFlush(new Plan(UUID.randomUUID(), "billed-plan", "Billed Plan"));
+        PriceVersion original = priceVersionRepository.saveAndFlush(
+                new PriceVersion(UUID.randomUUID(), plan, new BigDecimal("19.00"), Instant.parse("2026-01-01T00:00:00Z")));
+        PriceVersion increase = priceVersionRepository.saveAndFlush(
+                new PriceVersion(UUID.randomUUID(), plan, new BigDecimal("25.00"), Instant.parse("2026-06-01T00:00:00Z")));
+
+        Optional<PriceVersion> beforeTheIncrease = priceVersionRepository
+                .findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(plan.getId(), Instant.parse("2026-03-01T00:00:00Z"));
+        Optional<PriceVersion> afterTheIncrease = priceVersionRepository
+                .findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(plan.getId(), Instant.parse("2026-07-01T00:00:00Z"));
+
+        assertThat(beforeTheIncrease).contains(original);
+        assertThat(afterTheIncrease).contains(increase);
+    }
+
+    @Test
+    void findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDescConsidersARetiredPlanToo() {
+        // Billing an existing Subscription must still resolve a price for a Plan no
+        // longer open to new signups (Invariant 10) -- unlike PlanCatalogService's
+        // signup-eligibility path, this query has no retirement filter.
+        Plan retired = new Plan(UUID.randomUUID(), "retired-billed-plan", "Retired Billed Plan");
+        retired.retireForSignup();
+        planRepository.saveAndFlush(retired);
+        PriceVersion priceVersion = priceVersionRepository.saveAndFlush(
+                new PriceVersion(UUID.randomUUID(), retired, new BigDecimal("19.00"), Instant.parse("2026-01-01T00:00:00Z")));
+
+        Optional<PriceVersion> found = priceVersionRepository
+                .findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(retired.getId(), Instant.parse("2026-08-01T00:00:00Z"));
+
+        assertThat(found).contains(priceVersion);
+    }
 }
