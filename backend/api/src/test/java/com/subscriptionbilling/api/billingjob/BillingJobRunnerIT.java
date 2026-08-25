@@ -1,6 +1,7 @@
 package com.subscriptionbilling.api.billingjob;
 
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
+import com.subscriptionbilling.api.support.PaymentGatewayTestConfig;
 import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.customer.CustomerRepository;
 import com.subscriptionbilling.billingcore.plan.Plan;
@@ -9,6 +10,7 @@ import com.subscriptionbilling.billingcore.plan.PriceVersion;
 import com.subscriptionbilling.billingcore.plan.PriceVersionRepository;
 import com.subscriptionbilling.billingcore.subscription.Subscription;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionRepository;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionState;
 import com.subscriptionbilling.billingjob.BillingJobRunner;
 import com.subscriptionbilling.invoicing.invoice.Invoice;
 import com.subscriptionbilling.invoicing.invoice.InvoiceRepository;
@@ -31,8 +33,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Proves {@link BillingJobRunner#run()} end to end against real Postgres, wired through
- * {@code billing-core}'s and {@code invoicing}'s port implementations and the
- * always-succeeding {@link com.subscriptionbilling.api.support.PaymentGatewayTestConfig}
+ * {@code billing-core}'s, {@code invoicing}'s, and {@code dunning}'s port implementations
+ * and the token-driven {@link com.subscriptionbilling.api.support.PaymentGatewayTestConfig}
  * fake — the only module with every one of those on its classpath at once, which is why
  * this (and the selection coverage it absorbs from ticket #10's now-relocated {@code
  * BillingJobRunnerIT}) lives here rather than in {@code billing-core}.
@@ -145,9 +147,58 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
         assertThat(durationCountAfter).isEqualTo(durationCountBefore + 1L);
     }
 
+    @Test
+    void aDeclinedChargeRecordsAFailedPaymentAttemptLeavesDueDateUnchangedAndSuspendsTheSubscription() {
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        LocalDate billingPeriod = LocalDate.of(2026, 4, 10);
+        Subscription subscription = seedDueSubscription(
+                proPlan, Instant.parse("2026-04-10T00:00:00Z"), billingPeriod, PaymentGatewayTestConfig.DECLINE_TOKEN);
+
+        billingJobRunner.run();
+
+        Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod);
+        assertThat(invoice).isPresent();
+        List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
+        assertThat(attempts).singleElement().satisfies(attempt ->
+                assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.FAILED));
+
+        Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
+        assertThat(reloaded.getDueDate()).isEqualTo(billingPeriod);
+        assertThat(reloaded.getState()).isEqualTo(SubscriptionState.SUSPENDED);
+    }
+
+    @Test
+    void aTransientGatewayFailureDoesNotCreateAPaymentAttemptOrChangeSubscriptionState() {
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        LocalDate billingPeriod = LocalDate.of(2026, 4, 12);
+        Subscription subscription = seedDueSubscription(proPlan, Instant.parse("2026-04-12T00:00:00Z"),
+                billingPeriod, PaymentGatewayTestConfig.TRANSIENT_FAILURE_TOKEN);
+
+        billingJobRunner.run();
+
+        assertThat(invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod)).isEmpty();
+        Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
+        assertThat(reloaded.getDueDate()).isEqualTo(billingPeriod);
+        assertThat(reloaded.getState()).isEqualTo(SubscriptionState.ACTIVE);
+    }
+
+    @Test
+    void aDeclinedChargeIncrementsTheDeclinedChargesCounter() {
+        // Delta rather than exact count -- see the class Javadoc.
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        seedDueSubscription(proPlan, Instant.parse("2026-04-20T00:00:00Z"),
+                LocalDate.of(2026, 4, 20), PaymentGatewayTestConfig.DECLINE_TOKEN);
+        double declinedBefore = meterRegistry.get("billing_job_declined_charges_total").counter().count();
+
+        billingJobRunner.run();
+
+        double declinedAfter = meterRegistry.get("billing_job_declined_charges_total").counter().count();
+        assertThat(declinedAfter).isGreaterThanOrEqualTo(declinedBefore + 1.0);
+    }
+
     private Subscription seedSubscription(Plan plan, LocalDate dueDate) {
         Subscription subscription = Subscription.startPaidImmediately(
-                UUID.randomUUID(), seedCustomer(), plan, Instant.now());
+                UUID.randomUUID(), seedCustomer("tok_visa"), plan, Instant.now());
         if (dueDate != null) {
             subscription.advanceDueDate(dueDate);
         }
@@ -155,15 +206,20 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
     }
 
     private Subscription seedDueSubscription(Plan plan, Instant billingCycleAnchor, LocalDate billingPeriod) {
+        return seedDueSubscription(plan, billingCycleAnchor, billingPeriod, "tok_visa");
+    }
+
+    private Subscription seedDueSubscription(Plan plan, Instant billingCycleAnchor, LocalDate billingPeriod,
+                                              String paymentMethodToken) {
         Subscription subscription = Subscription.startPaidImmediately(
-                UUID.randomUUID(), seedCustomer(), plan, billingCycleAnchor);
+                UUID.randomUUID(), seedCustomer(paymentMethodToken), plan, billingCycleAnchor);
         subscription.advanceDueDate(billingPeriod);
         return subscriptionRepository.saveAndFlush(subscription);
     }
 
-    private Customer seedCustomer() {
+    private Customer seedCustomer(String paymentMethodToken) {
         Customer customer = new Customer(UUID.randomUUID(), "billing-job-it-" + UUID.randomUUID() + "@example.com");
-        customer.setPaymentMethodToken("tok_visa");
+        customer.setPaymentMethodToken(paymentMethodToken);
         return customerRepository.saveAndFlush(customer);
     }
 }

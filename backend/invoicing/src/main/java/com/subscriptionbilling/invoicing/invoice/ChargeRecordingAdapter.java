@@ -13,8 +13,8 @@ import java.util.UUID;
 /**
  * This module's implementation of the billing-job module's {@link ChargeRecordingPort}
  * contract: creates the Invoice for a Billing Cycle on its first charge attempt (per
- * Invariant 6, "one Invoice per (subscription, billing period)") and attaches every
- * subsequent attempt to that same Invoice.
+ * Invariant 6, "one Invoice per (subscription, billing period)"), whether that first
+ * attempt succeeds or fails, and attaches every subsequent attempt to that same Invoice.
  */
 @Component
 public class ChargeRecordingAdapter implements ChargeRecordingPort {
@@ -33,12 +33,28 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
     @Transactional
     public void recordSuccessfulCharge(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId,
                                         String gatewayTransactionId, Instant attemptedAt) {
-        Invoice invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod)
-                .orElseGet(() -> invoiceRepository.save(
-                        new Invoice(UUID.randomUUID(), subscriptionId, billingPeriod, priceVersionId)));
+        Invoice invoice = findOrCreateInvoice(subscriptionId, billingPeriod, priceVersionId);
         paymentAttemptRepository.save(
                 new PaymentAttempt(UUID.randomUUID(), invoice, PaymentAttemptStatus.SUCCEEDED, attemptedAt));
         log.info("Charge succeeded for subscription {} billing period {}: invoice {}, gateway transaction {}",
                 subscriptionId, billingPeriod, invoice.getId(), gatewayTransactionId);
+    }
+
+    @Override
+    @Transactional
+    public UUID recordFailedCharge(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId,
+                                    Instant attemptedAt) {
+        Invoice invoice = findOrCreateInvoice(subscriptionId, billingPeriod, priceVersionId);
+        paymentAttemptRepository.save(
+                new PaymentAttempt(UUID.randomUUID(), invoice, PaymentAttemptStatus.FAILED, attemptedAt));
+        log.info("Charge declined for subscription {} billing period {}: invoice {}",
+                subscriptionId, billingPeriod, invoice.getId());
+        return invoice.getId();
+    }
+
+    private Invoice findOrCreateInvoice(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId) {
+        return invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod)
+                .orElseGet(() -> invoiceRepository.save(
+                        new Invoice(UUID.randomUUID(), subscriptionId, billingPeriod, priceVersionId)));
     }
 }
