@@ -7,6 +7,7 @@ import com.subscriptionbilling.billingjob.due.DueSubscriptionsPort;
 import com.subscriptionbilling.billingjob.dunning.DunningHandoff;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
+import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -221,6 +222,77 @@ class BillingJobRunnerTest {
         verify(chargeRecordingPort).recordSuccessfulCharge(eq(healthy), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_charge_attempt_failures_total").counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void aSubscriptionAlreadyInvoicedForItsBillingPeriodIsSkippedWithoutCallingTheGateway() {
+        UUID subscriptionId = UUID.randomUUID();
+        ChargeableSubscription chargeable = chargeable(subscriptionId);
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
+        when(chargeRecordingPort.invoiceAlreadyRecorded(subscriptionId, chargeable.billingPeriod())).thenReturn(true);
+
+        runner().run();
+
+        verify(paymentGatewayClient, never()).charge(any(), any());
+        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any());
+        verify(dunningHandoff, never()).onChargeFailed(any(), any());
+        assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void invokingRunTwiceInARowForTheSameSubscriptionChargesTheGatewayAtMostOnce() {
+        UUID subscriptionId = UUID.randomUUID();
+        ChargeableSubscription chargeable = chargeable(subscriptionId);
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
+        // Not yet recorded on the first run; recorded (by this very run) by the second.
+        when(chargeRecordingPort.invoiceAlreadyRecorded(subscriptionId, chargeable.billingPeriod()))
+                .thenReturn(false, true);
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+
+        BillingJobRunner runner = runner();
+        runner.run();
+        runner.run();
+
+        verify(paymentGatewayClient, org.mockito.Mockito.times(1)).charge(any(), any());
+        verify(chargeRecordingPort, org.mockito.Mockito.times(1))
+                .recordSuccessfulCharge(any(), any(), any(), any(), any());
+        assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void losingTheConcurrentCreateInvoiceRaceOnASuccessfulChargeIsCountedAsADuplicateSkipNotAFailure() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+        org.mockito.Mockito.doThrow(new ChargeAlreadyRecordedException("already recorded", new RuntimeException()))
+                .when(chargeRecordingPort).recordSuccessfulCharge(any(), any(), any(), any(), any());
+
+        runner().run();
+
+        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any());
+        assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
+        assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
+        assertThat(meterRegistry.get("billing_job_charge_attempt_failures_total").counter().count()).isEqualTo(0.0);
+    }
+
+    @Test
+    void losingTheConcurrentCreateInvoiceRaceOnADeclineIsCountedAsADuplicateSkipNotAFailure() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        org.mockito.Mockito.doThrow(new ChargeAlreadyRecordedException("already recorded", new RuntimeException()))
+                .when(chargeRecordingPort).recordFailedCharge(any(), any(), any(), any());
+
+        runner().run();
+
+        verify(dunningHandoff, never()).onChargeFailed(any(), any());
+        assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
+        assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
+        assertThat(meterRegistry.get("billing_job_charge_attempt_failures_total").counter().count()).isEqualTo(0.0);
     }
 
     private ChargeableSubscription chargeable(UUID subscriptionId) {

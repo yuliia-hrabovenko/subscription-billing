@@ -5,8 +5,6 @@ import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 
-import java.util.UUID;
-
 /**
  * Wires a deterministic {@link PaymentGatewayClient} for this module's full-context
  * tests, standing in for the real gateway adapter (not built yet — see the Payment
@@ -15,7 +13,9 @@ import java.util.UUID;
  * it lives in that module's test sources) so a test can drive each {@link ChargeResult}
  * case without stubbing an HTTP call; any other token succeeds. {@code @TestConfiguration}
  * keeps it out of component scanning, so it only takes effect where explicitly imported
- * (see {@link AbstractPostgresIntegrationTest}).
+ * (see {@link AbstractPostgresIntegrationTest}). Registered as the concrete {@link
+ * CountingPaymentGatewayClient} type so a test can also autowire it directly and read
+ * {@link CountingPaymentGatewayClient#chargeCount()}.
  */
 @TestConfiguration
 public class PaymentGatewayTestConfig {
@@ -27,15 +27,7 @@ public class PaymentGatewayTestConfig {
     public static final String TRANSIENT_FAILURE_TOKEN = "tok_transient_failure";
 
     @Bean
-    public PaymentGatewayClient paymentGatewayClient() {
-        return (paymentMethodToken, amount) -> {
-            if (DECLINE_TOKEN.equals(paymentMethodToken)) {
-                return new ChargeResult.Declined("card_declined");
-            }
-            if (TRANSIENT_FAILURE_TOKEN.equals(paymentMethodToken)) {
-                return new ChargeResult.FailedTransiently("gateway_timeout");
-            }
-            return new ChargeResult.Succeeded("test-txn-" + UUID.randomUUID());
-        };
+    public CountingPaymentGatewayClient paymentGatewayClient() {
+        return new CountingPaymentGatewayClient(DECLINE_TOKEN, TRANSIENT_FAILURE_TOKEN);
     }
 }
