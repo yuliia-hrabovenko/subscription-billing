@@ -1,8 +1,10 @@
 package com.subscriptionbilling.invoicing.invoice;
 
+import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,6 +17,11 @@ import java.util.UUID;
  * contract: creates the Invoice for a Billing Cycle on its first charge attempt (per
  * Invariant 6, "one Invoice per (subscription, billing period)"), whether that first
  * attempt succeeds or fails, and attaches every subsequent attempt to that same Invoice.
+ * The database's unique constraint on {@code (subscription_id, billing_period)} — not
+ * this class's own find-then-create check — is the final word against two concurrent job
+ * instances both racing to create the same Invoice; losing that race surfaces as {@link
+ * ChargeAlreadyRecordedException} rather than a duplicate row or a raw {@link
+ * DataIntegrityViolationException}.
  */
 @Component
 public class ChargeRecordingAdapter implements ChargeRecordingPort {
@@ -27,6 +34,12 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
     public ChargeRecordingAdapter(InvoiceRepository invoiceRepository, PaymentAttemptRepository paymentAttemptRepository) {
         this.invoiceRepository = invoiceRepository;
         this.paymentAttemptRepository = paymentAttemptRepository;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean invoiceAlreadyRecorded(UUID subscriptionId, LocalDate billingPeriod) {
+        return invoiceRepository.existsBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod);
     }
 
     @Override
@@ -54,7 +67,21 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
 
     private Invoice findOrCreateInvoice(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId) {
         return invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod)
-                .orElseGet(() -> invoiceRepository.save(
-                        new Invoice(UUID.randomUUID(), subscriptionId, billingPeriod, priceVersionId)));
+                .orElseGet(() -> createInvoice(subscriptionId, billingPeriod, priceVersionId));
+    }
+
+    private Invoice createInvoice(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId) {
+        try {
+            // flush now, not at transaction commit, so a losing concurrent insert's
+            // constraint violation surfaces here -- inside this method's own transaction
+            // -- rather than propagating from an unrelated later commit.
+            return invoiceRepository.saveAndFlush(new Invoice(UUID.randomUUID(), subscriptionId, billingPeriod, priceVersionId));
+        } catch (DataIntegrityViolationException lostRace) {
+            log.info("Lost the race creating the Invoice for subscription {} billing period {}: already recorded by another run",
+                    subscriptionId, billingPeriod);
+            throw new ChargeAlreadyRecordedException(
+                    "Invoice for subscription " + subscriptionId + " billing period " + billingPeriod
+                            + " was already created by another run", lostRace);
+        }
     }
 }

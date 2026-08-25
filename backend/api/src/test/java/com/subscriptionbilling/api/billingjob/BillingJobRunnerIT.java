@@ -1,6 +1,7 @@
 package com.subscriptionbilling.api.billingjob;
 
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
+import com.subscriptionbilling.api.support.CountingPaymentGatewayClient;
 import com.subscriptionbilling.api.support.PaymentGatewayTestConfig;
 import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.customer.CustomerRepository;
@@ -65,6 +66,9 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private MeterRegistry meterRegistry;
+
+    @Autowired
+    private CountingPaymentGatewayClient paymentGatewayClient;
 
     @Test
     void runSelectsExactlyTheSubscriptionsDueTodayOrEarlier() {
@@ -194,6 +198,73 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
 
         double declinedAfter = meterRegistry.get("billing_job_declined_charges_total").counter().count();
         assertThat(declinedAfter).isGreaterThanOrEqualTo(declinedBefore + 1.0);
+    }
+
+    @Test
+    void runningTheJobTwiceInARowForTheSameSubscriptionChargesTheGatewayAtMostOnce() {
+        // Declined, so due_date stays put and the Subscription is still selected as due
+        // on the second run -- exercising the real pre-check (not a pre-seeded row) is
+        // what makes this a genuine two-real-runs proof of required test (a), rather than
+        // simulating "already recorded" by hand.
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        LocalDate billingPeriod = LocalDate.of(2026, 6, 1);
+        Subscription subscription = seedDueSubscription(proPlan, Instant.parse("2026-06-01T00:00:00Z"),
+                billingPeriod, PaymentGatewayTestConfig.DECLINE_TOKEN);
+        int chargesBefore = paymentGatewayClient.chargeCount();
+
+        billingJobRunner.run();
+        billingJobRunner.run();
+
+        Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod);
+        assertThat(invoice).isPresent();
+        List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
+        assertThat(attempts).hasSize(1);
+        assertThat(paymentGatewayClient.chargeCount() - chargesBefore).isEqualTo(1);
+    }
+
+    @Test
+    void aSubscriptionAlreadyInvoicedForItsDueDateIsSkippedWithoutChargingTheGatewayAgain() {
+        // Simulates the common "job re-run after a perceived-but-not-actual failure"
+        // case: a prior run recorded the Invoice/PaymentAttempt for this cycle but
+        // crashed before advancing due_date, so the Subscription still looks due today.
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        LocalDate billingPeriod = LocalDate.of(2026, 5, 5);
+        PriceVersion currentPrice = priceVersionRepository
+                .findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
+                        proPlan.getId(), billingPeriod.atStartOfDay(ZoneOffset.UTC).toInstant())
+                .orElseThrow();
+        Subscription subscription = seedDueSubscription(proPlan, Instant.parse("2026-05-05T00:00:00Z"), billingPeriod);
+        Invoice invoice = invoiceRepository.saveAndFlush(
+                new Invoice(UUID.randomUUID(), subscription.getId(), billingPeriod, currentPrice.getId()));
+        paymentAttemptRepository.saveAndFlush(
+                new PaymentAttempt(UUID.randomUUID(), invoice, PaymentAttemptStatus.SUCCEEDED, Instant.now()));
+
+        billingJobRunner.run();
+
+        List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.getId());
+        assertThat(attempts).hasSize(1);
+        Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
+        assertThat(reloaded.getDueDate()).isEqualTo(billingPeriod);
+    }
+
+    @Test
+    void aSkippedDuplicateChargeIncrementsTheDuplicateChargeSkippedCounter() {
+        // Delta rather than exact count -- see the class Javadoc.
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        LocalDate billingPeriod = LocalDate.of(2026, 5, 8);
+        PriceVersion currentPrice = priceVersionRepository
+                .findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
+                        proPlan.getId(), billingPeriod.atStartOfDay(ZoneOffset.UTC).toInstant())
+                .orElseThrow();
+        Subscription subscription = seedDueSubscription(proPlan, Instant.parse("2026-05-08T00:00:00Z"), billingPeriod);
+        invoiceRepository.saveAndFlush(
+                new Invoice(UUID.randomUUID(), subscription.getId(), billingPeriod, currentPrice.getId()));
+        double skippedBefore = meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count();
+
+        billingJobRunner.run();
+
+        double skippedAfter = meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count();
+        assertThat(skippedAfter).isGreaterThanOrEqualTo(skippedBefore + 1.0);
     }
 
     private Subscription seedSubscription(Plan plan, LocalDate dueDate) {

@@ -8,6 +8,7 @@ import com.subscriptionbilling.billingjob.due.DueSubscriptionsPort;
 import com.subscriptionbilling.billingjob.dunning.DunningHandoff;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
+import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -42,10 +43,24 @@ import java.util.UUID;
  *     runner's.
  * </ul>
  *
- * <p>One Subscription's charge attempt failing unexpectedly (a port throwing rather
- * than the gateway resolving a decline or transient failure) is logged, counted against
- * {@code billing_job_charge_attempt_failures_total}, and skipped rather than aborting the
- * rest of the day's due Subscriptions.
+ * <p>Before any of that, a Subscription already invoiced for the Billing Cycle being
+ * charged (per {@link ChargeRecordingPort#invoiceAlreadyRecorded}) is skipped entirely —
+ * the gateway is never called a second time for a cycle a prior run already recorded an
+ * outcome for, whether this is that same run resumed after a crash or a second overlapping
+ * instance. As the last-resort backstop for a genuine concurrent race — two instances both
+ * passing that check before either commits — {@link ChargeRecordingPort}'s create-Invoice
+ * calls throwing {@link ChargeAlreadyRecordedException} is handled the same way: logged,
+ * counted against {@code billing_job_duplicate_charge_skipped_total}, and not treated as a
+ * charge failure. That backstop deduplicates the Invoice/PaymentAttempt record, not the
+ * gateway call itself: two instances that both pass the pre-check before either commits
+ * can still both reach the gateway, so only the losing instance's persistence attempt is
+ * caught here. Preventing that outcome needs the gateway call itself to be idempotent (an
+ * idempotency key), which belongs to Payment Gateway Integration, not this runner.
+ *
+ * <p>One Subscription's charge attempt failing unexpectedly (a port throwing rather than
+ * the gateway resolving a decline or transient failure, and other than the race above) is
+ * logged, counted against {@code billing_job_charge_attempt_failures_total}, and skipped
+ * rather than aborting the rest of the day's due Subscriptions.
  */
 @Component
 public class BillingJobRunner {
@@ -62,6 +77,7 @@ public class BillingJobRunner {
     private final Timer jobDuration;
     private final Counter subscriptionsProcessed;
     private final Counter declinedCharges;
+    private final Counter duplicateChargesSkipped;
     private final Counter chargeAttemptFailures;
 
     public BillingJobRunner(DueSubscriptionsPort dueSubscriptionsPort,
@@ -99,6 +115,10 @@ public class BillingJobRunner {
         this.declinedCharges = Counter.builder("billing_job_declined_charges_total")
                 .description("Charge attempts declined by the gateway and handed off to Dunning")
                 .register(meterRegistry);
+        this.duplicateChargesSkipped = Counter.builder("billing_job_duplicate_charge_skipped_total")
+                .description("Charge attempts skipped because this Billing Cycle was already invoiced by a prior "
+                        + "or concurrent run -- not a charge failure")
+                .register(meterRegistry);
         this.chargeAttemptFailures = Counter.builder("billing_job_charge_attempt_failures_total")
                 .description("Charge attempts that failed unexpectedly (a port throwing), as opposed to a gateway decline")
                 .register(meterRegistry);
@@ -109,7 +129,8 @@ public class BillingJobRunner {
      * DueSubscriptionsPort#findDueSubscriptionIds}) and attempts to charge each one.
      * Timed and counted for the {@code billing_job_duration_seconds}, {@code
      * billing_job_subscriptions_processed_total}, {@code
-     * billing_job_declined_charges_total}, and {@code
+     * billing_job_declined_charges_total}, {@code
+     * billing_job_duplicate_charge_skipped_total}, and {@code
      * billing_job_charge_attempt_failures_total} Prometheus metrics.
      *
      * @return the ids of every Subscription selected as due, regardless of whether its
@@ -135,16 +156,36 @@ public class BillingJobRunner {
 
     private void chargeOneCycle(UUID subscriptionId) {
         ChargeableSubscription chargeable = chargeableSubscriptionPort.loadForCharge(subscriptionId);
+        if (chargeRecordingPort.invoiceAlreadyRecorded(subscriptionId, chargeable.billingPeriod())) {
+            // A prior run (this one resumed after a crash, or another overlapping
+            // instance) already recorded an outcome for this cycle -- never call the
+            // gateway again for it.
+            skipAsDuplicate(subscriptionId, "billing period " + chargeable.billingPeriod() + " is already invoiced");
+            return;
+        }
+
         ChargeResult result = paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.amount());
         Instant attemptedAt = Instant.now(clock);
-        switch (result) {
-            case ChargeResult.Succeeded succeeded -> handleSuccess(subscriptionId, chargeable, succeeded, attemptedAt);
-            case ChargeResult.Declined declined -> handleDecline(subscriptionId, chargeable, declined, attemptedAt);
-            case ChargeResult.FailedTransiently transientFailure ->
-                    // Never treated as a decline: no PaymentAttempt, no Dunning hand-off,
-                    // no state change. Retrying it is Payment Gateway Integration's job.
-                    log.info("Charge failed transiently for subscription {}: {}", subscriptionId, transientFailure.reason());
+        try {
+            switch (result) {
+                case ChargeResult.Succeeded succeeded -> handleSuccess(subscriptionId, chargeable, succeeded, attemptedAt);
+                case ChargeResult.Declined declined -> handleDecline(subscriptionId, chargeable, declined, attemptedAt);
+                case ChargeResult.FailedTransiently transientFailure ->
+                        // Never treated as a decline: no PaymentAttempt, no Dunning hand-off,
+                        // no state change. Retrying it is Payment Gateway Integration's job.
+                        log.info("Charge failed transiently for subscription {}: {}", subscriptionId, transientFailure.reason());
+            }
+        } catch (ChargeAlreadyRecordedException lostRace) {
+            // The genuine-concurrent-race backstop: another instance won the create-Invoice
+            // race between our pre-check above and this recording call. Not a failure --
+            // that other instance's recording is this cycle's outcome of record.
+            skipAsDuplicate(subscriptionId, "lost the concurrent-record race: " + lostRace.getMessage());
         }
+    }
+
+    private void skipAsDuplicate(UUID subscriptionId, String reason) {
+        log.info("Skipping subscription {}: {}", subscriptionId, reason);
+        duplicateChargesSkipped.increment();
     }
 
     private void handleSuccess(UUID subscriptionId, ChargeableSubscription chargeable,
