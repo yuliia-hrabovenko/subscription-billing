@@ -29,11 +29,16 @@ import java.util.UUID;
  * same code path — none of them go through a {@code @Scheduled} annotation.
  *
  * <p>For every Subscription {@link DueSubscriptionsPort} selects, charges it through
- * {@link PaymentGatewayClient}:
+ * {@link PaymentGatewayClient}. A Trial's auto-conversion charge (a {@code trialing}
+ * Subscription whose due date, its trial end date, is due) goes through this exact same
+ * sequence as an ordinary renewal — this class never branches on which one it's driving;
+ * {@link BillingCycleAdvancePort} and {@link DunningHandoff}'s implementations decide
+ * whether a transition applies from the Subscription's own persisted state:
  * <ul>
  *     <li>Success: records the Invoice/PaymentAttempt via {@link ChargeRecordingPort} and
  *     advances {@code due_date} via {@link BillingCycleAdvancePort} using {@link
- *     AnchorDate}'s clamping rule.
+ *     AnchorDate}'s clamping rule — for a Trial conversion, this is also where the first
+ *     Billing Cycle opens and the Subscription activates.
  *     <li>Decline: records a failed PaymentAttempt against the same Invoice (created on
  *     this first attempt if none exists yet) and hands off to {@link DunningHandoff}.
  *     Anchor Date and {@code due_date} are left untouched.
@@ -194,7 +199,7 @@ public class BillingJobRunner {
                 chargeable.priceVersionId(), succeeded.gatewayTransactionId(), attemptedAt);
 
         LocalDate nextDueDate = new AnchorDate(chargeable.anchorDayOfMonth()).next(chargeable.billingPeriod());
-        billingCycleAdvancePort.advanceDueDate(subscriptionId, nextDueDate);
+        billingCycleAdvancePort.advanceDueDate(subscriptionId, nextDueDate, succeeded.gatewayTransactionId());
 
         subscriptionsProcessed.increment();
     }

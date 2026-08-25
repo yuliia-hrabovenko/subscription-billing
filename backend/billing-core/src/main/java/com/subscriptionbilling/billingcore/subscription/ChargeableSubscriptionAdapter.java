@@ -7,6 +7,8 @@ import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.UUID;
 
@@ -14,19 +16,29 @@ import java.util.UUID;
  * This module's implementation of the billing-job module's {@link
  * ChargeableSubscriptionPort} contract: resolves a due Subscription's card-on-file
  * token, the {@link PriceVersion} in effect for its Plan on the Billing Cycle date being
- * charged, and the fixed Anchor Date day-of-month {@link
- * Subscription#getBillingCycleAnchor()} carries.
+ * charged, and the Anchor Date day-of-month a successful charge's next cycle clamps
+ * against. For an already-paid Subscription (a renewal) that's the fixed day {@link
+ * Subscription#getBillingCycleAnchor()} already carries; for a {@code trialing}
+ * Subscription converting today (no Billing Cycle opened yet — Invariant 5), it's
+ * today's day-of-month, the Anchor Date about to be established by this same charge.
  */
 @Component
 public class ChargeableSubscriptionAdapter implements ChargeableSubscriptionPort {
 
     private final SubscriptionRepository subscriptionRepository;
     private final PriceVersionRepository priceVersionRepository;
+    private final Clock clock;
 
     public ChargeableSubscriptionAdapter(SubscriptionRepository subscriptionRepository,
                                           PriceVersionRepository priceVersionRepository) {
+        this(subscriptionRepository, priceVersionRepository, Clock.systemUTC());
+    }
+
+    ChargeableSubscriptionAdapter(SubscriptionRepository subscriptionRepository,
+                                   PriceVersionRepository priceVersionRepository, Clock clock) {
         this.subscriptionRepository = subscriptionRepository;
         this.priceVersionRepository = priceVersionRepository;
+        this.clock = clock;
     }
 
     @Override
@@ -41,7 +53,9 @@ public class ChargeableSubscriptionAdapter implements ChargeableSubscriptionPort
                 .findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
                         planId, subscription.getDueDate().atStartOfDay(ZoneOffset.UTC).toInstant())
                 .orElseThrow(() -> new IllegalStateException("Plan " + planId + " has no PriceVersion in effect"));
-        int anchorDayOfMonth = subscription.getBillingCycleAnchor().atZone(ZoneOffset.UTC).getDayOfMonth();
+        int anchorDayOfMonth = subscription.getBillingCycleAnchor() != null
+                ? subscription.getBillingCycleAnchor().atZone(ZoneOffset.UTC).getDayOfMonth()
+                : LocalDate.now(clock).getDayOfMonth();
 
         return new ChargeableSubscription(
                 subscription.getId(),

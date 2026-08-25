@@ -232,4 +232,31 @@ class SubscriptionTest {
 
         assertThat(subscription.getDueDate()).isEqualTo(LocalDate.of(2026, 2, 28));
     }
+
+    @Test
+    void applySuccessfulChargeFromTrialingActivatesOpensTheBillingCycleAndClearsTheTrial() {
+        Subscription subscription = Subscription.startTrial(UUID.randomUUID(), customer, plan, Instant.now());
+        Instant chargedAt = Instant.parse("2026-08-24T03:00:00Z");
+
+        subscription.applySuccessfulCharge(chargedAt, LocalDate.of(2026, 9, 24));
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(subscription.getBillingCycleAnchor()).isEqualTo(chargedAt);
+        assertThat(subscription.getTrialEndsAt()).isNull();
+        assertThat(subscription.getDueDate()).isEqualTo(LocalDate.of(2026, 9, 24));
+    }
+
+    @Test
+    void applySuccessfulChargeFromActiveOnlyAdvancesDueDateLeavingStateAndAnchorUnchanged() {
+        Instant originalAnchor = Instant.parse("2026-01-31T00:00:00Z");
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, originalAnchor);
+
+        subscription.applySuccessfulCharge(Instant.parse("2026-02-28T03:00:00Z"), LocalDate.of(2026, 3, 31));
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.ACTIVE);
+        // An ordinary renewal never re-anchors the Billing Cycle -- only a Trial
+        // conversion, which has no prior anchor, establishes one from chargedAt.
+        assertThat(subscription.getBillingCycleAnchor()).isEqualTo(originalAnchor);
+        assertThat(subscription.getDueDate()).isEqualTo(LocalDate.of(2026, 3, 31));
+    }
 }

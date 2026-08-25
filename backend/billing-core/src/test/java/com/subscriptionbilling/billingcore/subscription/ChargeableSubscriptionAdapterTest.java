@@ -11,6 +11,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -86,6 +87,29 @@ class ChargeableSubscriptionAdapterTest {
                 .loadForCharge(subscription.getId());
 
         assertThat(result.priceVersionId()).isEqualTo(priceInEffectOnTheBillingPeriod.getId());
+    }
+
+    @Test
+    void resolvesTheAnchorDayFromTodayNotFromAnExistingAnchorForATrialingSubscriptionConvertingNow() {
+        // A trialing Subscription has no Billing Cycle yet (Invariant 5) -- there is no
+        // existing anchor to derive a day-of-month from, so it must come from today,
+        // the day this same charge is about to open the first Billing Cycle on.
+        customer.setPaymentMethodToken("tok_visa");
+        LocalDate trialEndDate = LocalDate.of(2026, 8, 20);
+        Subscription subscription = Subscription.startTrial(UUID.randomUUID(), customer, plan, Instant.now());
+        subscription.advanceDueDate(trialEndDate);
+        PriceVersion priceVersion = new PriceVersion(
+                UUID.randomUUID(), plan, new BigDecimal("19.00"), Instant.parse("2026-01-01T00:00:00Z"));
+        when(subscriptionRepository.findById(subscription.getId())).thenReturn(Optional.of(subscription));
+        when(priceVersionRepository.findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
+                plan.getId(), trialEndDate.atStartOfDay(ZoneOffset.UTC).toInstant())).thenReturn(Optional.of(priceVersion));
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-08-24T03:00:00Z"), ZoneOffset.UTC);
+
+        ChargeableSubscription result = new ChargeableSubscriptionAdapter(subscriptionRepository, priceVersionRepository, fixedClock)
+                .loadForCharge(subscription.getId());
+
+        assertThat(result.billingPeriod()).isEqualTo(trialEndDate);
+        assertThat(result.anchorDayOfMonth()).isEqualTo(24);
     }
 
     @Test
