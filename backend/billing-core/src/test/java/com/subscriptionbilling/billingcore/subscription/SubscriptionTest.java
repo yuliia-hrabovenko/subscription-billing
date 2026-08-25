@@ -7,6 +7,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -220,5 +221,15 @@ class SubscriptionTest {
 
         // Rejected transitions never mutate state — still exactly where it started.
         assertThat(subscription.getState()).isEqualTo(originatingState);
+    }
+
+    @Test
+    void advanceDueDateReplacesTheCurrentDueDateWithTheGivenOne() {
+        Subscription subscription = new Subscription(
+                UUID.randomUUID(), customer, plan, SubscriptionState.ACTIVE, Instant.now(), LocalDate.of(2026, 1, 31));
+
+        subscription.advanceDueDate(LocalDate.of(2026, 2, 28));
+
+        assertThat(subscription.getDueDate()).isEqualTo(LocalDate.of(2026, 2, 28));
     }
 }

@@ -1,6 +1,7 @@
 package com.subscriptionbilling.api.support;
 
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.context.annotation.Import;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
@@ -16,9 +17,14 @@ import org.testcontainers.utility.DockerImageName;
  * static initializer instead (the Testcontainers "singleton container" pattern) keeps
  * it running for every subclass in the JVM; Testcontainers' Ryuk reaper stops it when
  * the JVM exits.
+ *
+ * <p>{@link PaymentGatewayTestConfig} is imported here (rather than per-test-class) so
+ * every full-context test in this module boots: {@code ApiApplication}'s broad
+ * component scan picks up {@code BillingJobRunner}, which needs a {@code
+ * PaymentGatewayClient} bean that no production adapter provides yet.
  */
-
 @Testcontainers(disabledWithoutDocker = true)
+@Import(PaymentGatewayTestConfig.class)
 public abstract class AbstractPostgresIntegrationTest {
 
     @ServiceConnection

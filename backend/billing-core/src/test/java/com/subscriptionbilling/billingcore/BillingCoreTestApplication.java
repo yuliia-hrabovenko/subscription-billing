@@ -1,7 +1,11 @@
 package com.subscriptionbilling.billingcore;
 
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+import com.subscriptionbilling.billingjob.BillingJobRunner;
+import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.persistence.autoconfigure.EntityScan;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.FilterType;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 /**
@@ -15,8 +19,23 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  * billing-core depends on {@code audit}'s {@code AuditLogEntryRepository} at runtime
  * now, not merely at compile time, so a full-context test here needs that bean
  * discoverable too.
+ *
+ * <p>Decomposed from the composed {@code @SpringBootApplication} (see {@code
+ * ApiApplication}'s Javadoc for why that annotation doesn't expose {@code
+ * excludeFilters} directly here) specifically to exclude {@link BillingJobRunner}:
+ * billing-core's own module dependencies (audit, dunning) satisfy every port
+ * BillingJobRunner needed through ticket #10, but success-path charging added a port
+ * only the invoicing module implements — a dependency billing-core intentionally
+ * doesn't have. BillingJobRunner's full orchestration is exercised in the api module's
+ * integration tests instead, where every port has a real implementation on the
+ * classpath; this module's own tests still exercise its adapters
+ * ({@link com.subscriptionbilling.billingcore.subscription.DueSubscriptionsAdapter} and
+ * friends) directly.
  */
-@SpringBootApplication(scanBasePackages = "com.subscriptionbilling")
+@SpringBootConfiguration
+@EnableAutoConfiguration
+@ComponentScan(basePackages = "com.subscriptionbilling",
+        excludeFilters = @ComponentScan.Filter(type = FilterType.ASSIGNABLE_TYPE, classes = BillingJobRunner.class))
 @EntityScan("com.subscriptionbilling")
 @EnableJpaRepositories("com.subscriptionbilling")
 public class BillingCoreTestApplication {

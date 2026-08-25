@@ -15,9 +15,11 @@ import org.springframework.security.web.SecurityFilterChain;
 /**
  * ADR-0003: bearer-JWT authentication via Spring Security's OAuth2 Resource Server
  * support, one {@code CUSTOMER} role, no session state. {@code POST /subscriptions}
- * (signup) and {@code GET /plans} are this API's only pre-auth endpoints — every other
- * request must carry a valid {@code CUSTOMER} token; anything beyond the role check
- * (i.e. resource ownership) is a service-layer concern, not this filter chain's.
+ * (signup), {@code GET /plans}, and the Prometheus scrape endpoint are this API's only
+ * pre-auth endpoints — every other request must carry a valid {@code CUSTOMER} token;
+ * anything beyond the role check (i.e. resource ownership) is a service-layer concern,
+ * not this filter chain's. Prometheus (docker-compose) has no bearer token to present,
+ * so its scrape target can't sit behind the same JWT requirement as customer endpoints.
  */
 @Configuration
 @EnableWebSecurity
@@ -44,6 +46,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.GET, "/api/v1/plans").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/subscriptions").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/actuator/prometheus").permitAll()
                         .anyRequest().hasRole("CUSTOMER"))
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(customerJwtAuthenticationConverter()))

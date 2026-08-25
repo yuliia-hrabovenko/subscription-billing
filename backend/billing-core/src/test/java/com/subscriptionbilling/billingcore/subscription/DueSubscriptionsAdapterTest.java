@@ -16,8 +16,10 @@ import static org.mockito.Mockito.when;
 /**
  * Unit coverage of {@link DueSubscriptionsAdapter}: it forwards to {@link
  * SubscriptionRepository#findDueSubscriptionIds}. Whether the {@code <= asOf} comparison
- * itself is correct against real persisted Subscriptions is covered by {@link
- * BillingJobRunnerIT}.
+ * itself is correct against real persisted Subscriptions is covered by the api module's
+ * {@code BillingJobRunnerIT} (relocated there once success-path charging pulled in a
+ * port only the invoicing module implements — see {@code BillingCoreTestApplication}'s
+ * Javadoc).
  */
 @ExtendWith(MockitoExtension.class)
 class DueSubscriptionsAdapterTest {

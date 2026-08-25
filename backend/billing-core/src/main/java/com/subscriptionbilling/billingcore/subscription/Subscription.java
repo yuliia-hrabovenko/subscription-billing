@@ -271,6 +271,18 @@ public class Subscription {
         state = SubscriptionState.SUSPENDED;
     }
 
+    /**
+     * Advances {@code due_date} to the next Billing Cycle date after a successful
+     * charge. The caller (the billing job) has already resolved {@code nextDueDate} via
+     * the {@code AnchorDate} value object's month-end clamping — this method only
+     * persists it, it does not compute it.
+     *
+     * @param nextDueDate the resolved next Billing Cycle date
+     */
+    public void advanceDueDate(LocalDate nextDueDate) {
+        this.dueDate = nextDueDate;
+    }
+
     public UUID getId() {
         return id;
     }

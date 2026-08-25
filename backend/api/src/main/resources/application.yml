@@ -19,5 +19,12 @@ billing:
       # every real environment (same convention as this file's DB_PASSWORD default).
       secret: ${JWT_SECRET:dev-only-jwt-signing-secret-override-with-JWT_SECRET-env-var-in-every-real-environment}
 
+management:
+  endpoints:
+    web:
+      exposure:
+        # Scraped by the docker-compose Prometheus service (docker/prometheus/prometheus.yml).
+        include: prometheus
+
 server:
   port: ${SERVER_PORT:8080}
