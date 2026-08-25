@@ -111,6 +111,25 @@ class BillingJobRunnerTest {
     }
 
     @Test
+    void aSuccessfulChargeCatchingUpAMissedRunAdvancesFromTheOriginalDueDateNotFromToday() {
+        UUID subscriptionId = UUID.randomUUID();
+        // Anchored to the 21st; TODAY (Aug 24) simulates the run catching up 3 days late.
+        // The next due date must land on Sep 21 -- derived from the missed due date, not
+        // from TODAY, which would otherwise drift the Customer's billing day.
+        ChargeableSubscription chargeable = new ChargeableSubscription(
+                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(),
+                LocalDate.of(2026, 8, 21), 21);
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
+        when(paymentGatewayClient.charge("tok_visa", new BigDecimal("19.00")))
+                .thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+
+        runner().run();
+
+        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2026, 9, 21));
+    }
+
+    @Test
     void aSuccessfulChargeIncrementsTheSubscriptionsProcessedCounter() {
         UUID subscriptionId = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
