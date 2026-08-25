@@ -3,6 +3,8 @@ package com.subscriptionbilling.api.billingjob;
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
 import com.subscriptionbilling.api.support.CountingPaymentGatewayClient;
 import com.subscriptionbilling.api.support.PaymentGatewayTestConfig;
+import com.subscriptionbilling.audit.AuditLogEntry;
+import com.subscriptionbilling.audit.AuditLogEntryRepository;
 import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.customer.CustomerRepository;
 import com.subscriptionbilling.billingcore.plan.Plan;
@@ -13,6 +15,7 @@ import com.subscriptionbilling.billingcore.subscription.Subscription;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionRepository;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionState;
 import com.subscriptionbilling.billingjob.BillingJobRunner;
+import com.subscriptionbilling.billingjob.anchor.AnchorDate;
 import com.subscriptionbilling.invoicing.invoice.Invoice;
 import com.subscriptionbilling.invoicing.invoice.InvoiceRepository;
 import com.subscriptionbilling.invoicing.invoice.PaymentAttempt;
@@ -69,6 +72,9 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private CountingPaymentGatewayClient paymentGatewayClient;
+
+    @Autowired
+    private AuditLogEntryRepository auditLogEntryRepository;
 
     @Test
     void runSelectsExactlyTheSubscriptionsDueTodayOrEarlier() {
@@ -298,6 +304,62 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
         assertThat(skippedAfter).isGreaterThanOrEqualTo(skippedBefore + 1.0);
     }
 
+    @Test
+    void aTrialConversionChargeThatSucceedsActivatesTheSubscriptionOpensTheBillingCycleAnchoredToTodayAndCreatesExactlyOneInvoice() {
+        // Proves required test (c): a full Trial -> active conversion charge succeeds
+        // through the exact same success path as an ordinary renewal (the assertions
+        // mirror aSuccessfulChargeCreatesExactlyOneInvoiceAndOneSucceededPaymentAttemptForTheBillingPeriod above).
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        LocalDate today = LocalDate.now();
+        Subscription subscription = seedDueTrialSubscription(proPlan, today, "tok_visa");
+
+        billingJobRunner.run();
+
+        Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
+        assertThat(reloaded.getState()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(reloaded.getBillingCycleAnchor()).isNotNull();
+        assertThat(reloaded.getTrialEndsAt()).isNull();
+        assertThat(reloaded.getDueDate()).isEqualTo(new AnchorDate(today.getDayOfMonth()).next(today));
+
+        Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), today);
+        assertThat(invoice).isPresent();
+        List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
+        assertThat(attempts).singleElement().satisfies(attempt ->
+                assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.SUCCEEDED));
+
+        List<AuditLogEntry> entries = auditLogEntryRepository.findBySubscriptionId(subscription.getId());
+        assertThat(entries).anySatisfy(entry -> {
+            assertThat(entry.getOldState()).isEqualTo("TRIALING");
+            assertThat(entry.getNewState()).isEqualTo("ACTIVE");
+        });
+    }
+
+    @Test
+    void aTrialConversionChargeThatIsDeclinedSuspendsTheSubscriptionThroughTheSameDunningHandoffAsARenewalDecline() {
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        LocalDate trialEndDate = LocalDate.now();
+        Subscription subscription = seedDueTrialSubscription(proPlan, trialEndDate, PaymentGatewayTestConfig.DECLINE_TOKEN);
+
+        billingJobRunner.run();
+
+        Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
+        assertThat(reloaded.getState()).isEqualTo(SubscriptionState.SUSPENDED);
+        assertThat(reloaded.getBillingCycleAnchor()).isNull();
+        assertThat(reloaded.getDueDate()).isEqualTo(trialEndDate);
+
+        Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), trialEndDate);
+        assertThat(invoice).isPresent();
+        List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
+        assertThat(attempts).singleElement().satisfies(attempt ->
+                assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.FAILED));
+
+        List<AuditLogEntry> entries = auditLogEntryRepository.findBySubscriptionId(subscription.getId());
+        assertThat(entries).anySatisfy(entry -> {
+            assertThat(entry.getOldState()).isEqualTo("TRIALING");
+            assertThat(entry.getNewState()).isEqualTo("SUSPENDED");
+        });
+    }
+
     private Subscription seedSubscription(Plan plan, LocalDate dueDate) {
         Subscription subscription = Subscription.startPaidImmediately(
                 UUID.randomUUID(), seedCustomer("tok_visa"), plan, Instant.now());
@@ -316,6 +378,13 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
         Subscription subscription = Subscription.startPaidImmediately(
                 UUID.randomUUID(), seedCustomer(paymentMethodToken), plan, billingCycleAnchor);
         subscription.advanceDueDate(billingPeriod);
+        return subscriptionRepository.saveAndFlush(subscription);
+    }
+
+    private Subscription seedDueTrialSubscription(Plan plan, LocalDate trialEndDate, String paymentMethodToken) {
+        Subscription subscription = Subscription.startTrial(
+                UUID.randomUUID(), seedCustomer(paymentMethodToken), plan, Instant.now());
+        subscription.advanceDueDate(trialEndDate);
         return subscriptionRepository.saveAndFlush(subscription);
     }
 

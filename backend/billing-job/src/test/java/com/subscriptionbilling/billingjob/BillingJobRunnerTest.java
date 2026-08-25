@@ -107,7 +107,7 @@ class BillingJobRunnerTest {
         verify(chargeRecordingPort).recordSuccessfulCharge(
                 eq(subscriptionId), eq(LocalDate.of(2026, 1, 31)), eq(chargeable.priceVersionId()),
                 eq("gw-txn-1"), eq(FIXED_CLOCK.instant()));
-        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2026, 2, 28));
+        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2026, 2, 28), "gw-txn-1");
     }
 
     @Test
@@ -126,7 +126,7 @@ class BillingJobRunnerTest {
 
         runner().run();
 
-        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2026, 9, 21));
+        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2026, 9, 21), "gw-txn-1");
     }
 
     @Test
@@ -167,7 +167,7 @@ class BillingJobRunnerTest {
                 chargeable.priceVersionId(), FIXED_CLOCK.instant());
         verify(dunningHandoff).onChargeFailed(subscriptionId, invoiceId);
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
-        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any());
+        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
         assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(1.0);
     }
@@ -183,7 +183,7 @@ class BillingJobRunnerTest {
 
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
         verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any());
-        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any());
+        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
         verify(dunningHandoff, never()).onChargeFailed(any(), any());
         assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
     }
@@ -254,7 +254,7 @@ class BillingJobRunnerTest {
         runner().run();
 
         verify(paymentGatewayClient, never()).charge(any(), any());
-        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any());
+        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
         verify(dunningHandoff, never()).onChargeFailed(any(), any());
         assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
     }
@@ -291,7 +291,7 @@ class BillingJobRunnerTest {
 
         runner().run();
 
-        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any());
+        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
         assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_charge_attempt_failures_total").counter().count()).isEqualTo(0.0);

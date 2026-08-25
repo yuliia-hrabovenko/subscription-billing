@@ -283,6 +283,31 @@ public class Subscription {
         this.dueDate = nextDueDate;
     }
 
+    /**
+     * The success-path update applied after every successful charge, a Trial's
+     * auto-conversion charge and an ordinary renewal alike, through one call so
+     * neither the billing job nor its ports branch on which one they're driving. A
+     * {@code trialing} Subscription is converted: moved to {@code active}, its Trial
+     * cleared, and its first Billing Cycle opened anchored to {@code chargedAt}
+     * (Invariant 5 — a trialing Subscription carries no Billing Cycle until this). An
+     * already-{@code active} Subscription (a renewal) is left as is by that part. Either
+     * way, {@code due_date} advances to {@code nextDueDate}.
+     *
+     * @param chargedAt   the instant this successful charge was resolved; becomes the
+     *                    new Billing Cycle's Anchor Date when converting from a Trial,
+     *                    otherwise unused
+     * @param nextDueDate the resolved next Billing Cycle date, already clamped by the
+     *                    caller via the {@code AnchorDate} value object
+     */
+    public void applySuccessfulCharge(Instant chargedAt, LocalDate nextDueDate) {
+        if (state == SubscriptionState.TRIALING) {
+            state = SubscriptionState.ACTIVE;
+            trialEndsAt = null;
+            billingCycleAnchor = chargedAt;
+        }
+        this.dueDate = nextDueDate;
+    }
+
     public UUID getId() {
         return id;
     }
