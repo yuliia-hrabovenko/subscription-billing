@@ -4,6 +4,7 @@ import com.subscriptionbilling.billingjob.anchor.BillingCycleAdvancePort;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.due.DueSubscriptionsPort;
+import com.subscriptionbilling.billingjob.dunning.DunningHandoff;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
@@ -57,11 +58,14 @@ class BillingJobRunnerTest {
     @Mock
     private BillingCycleAdvancePort billingCycleAdvancePort;
 
+    @Mock
+    private DunningHandoff dunningHandoff;
+
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     private BillingJobRunner runner() {
         return new BillingJobRunner(dueSubscriptionsPort, chargeableSubscriptionPort, paymentGatewayClient,
-                chargeRecordingPort, billingCycleAdvancePort, meterRegistry, FIXED_CLOCK);
+                chargeRecordingPort, billingCycleAdvancePort, dunningHandoff, meterRegistry, FIXED_CLOCK);
     }
 
     @Test
@@ -127,21 +131,29 @@ class BillingJobRunnerTest {
     }
 
     @Test
-    void aDeclinedChargeNeitherRecordsNorAdvancesTheBillingCycle() {
+    void aDeclinedChargeRecordsAFailedAttemptAndHandsOffToDunningWithoutAdvancingTheBillingCycle() {
         UUID subscriptionId = UUID.randomUUID();
+        UUID invoiceId = UUID.randomUUID();
+        ChargeableSubscription chargeable = chargeable(subscriptionId);
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
-        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
+                chargeable.priceVersionId(), FIXED_CLOCK.instant())).thenReturn(invoiceId);
 
         runner().run();
 
+        verify(chargeRecordingPort).recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
+                chargeable.priceVersionId(), FIXED_CLOCK.instant());
+        verify(dunningHandoff).onChargeFailed(subscriptionId, invoiceId);
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
         verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any());
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
+        assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(1.0);
     }
 
     @Test
-    void aTransientGatewayFailureNeitherRecordsNorAdvancesTheBillingCycle() {
+    void aTransientGatewayFailureNeitherRecordsNorAdvancesNorHandsOffToDunning() {
         UUID subscriptionId = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
@@ -150,7 +162,26 @@ class BillingJobRunnerTest {
         runner().run();
 
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
+        verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any());
         verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any());
+        verify(dunningHandoff, never()).onChargeFailed(any(), any());
+        assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
+    }
+
+    @Test
+    void aDunningHandoffThatThrowsIsCountedAsAnUnexpectedFailureNotADeclinedCharge() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(chargeRecordingPort.recordFailedCharge(any(), any(), any(), any())).thenReturn(UUID.randomUUID());
+        org.mockito.Mockito.doThrow(new IllegalStateException("dunning unavailable"))
+                .when(dunningHandoff).onChargeFailed(any(), any());
+
+        runner().run();
+
+        assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
+        assertThat(meterRegistry.get("billing_job_charge_attempt_failures_total").counter().count()).isEqualTo(1.0);
     }
 
     @Test

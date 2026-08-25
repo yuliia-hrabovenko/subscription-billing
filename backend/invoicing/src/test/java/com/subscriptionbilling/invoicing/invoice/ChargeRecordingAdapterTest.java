@@ -19,10 +19,10 @@ import static org.mockito.Mockito.when;
 
 /**
  * Unit coverage of {@link ChargeRecordingAdapter}: it creates an Invoice only on the
- * first charge attempt for a Billing Cycle, attaches every subsequent one to the
- * existing row, and always appends a succeeded PaymentAttempt. Whether the {@code
- * (subscription_id, billing_period)} uniqueness constraint itself holds is covered by
- * {@link InvoiceRepositoryTest}.
+ * first charge attempt for a Billing Cycle — success or failure — attaches every
+ * subsequent one to the existing row, and appends a PaymentAttempt with the outcome's
+ * status. Whether the {@code (subscription_id, billing_period)} uniqueness constraint
+ * itself holds is covered by {@link InvoiceRepositoryTest}.
  */
 @ExtendWith(MockitoExtension.class)
 class ChargeRecordingAdapterTest {
@@ -78,5 +78,49 @@ class ChargeRecordingAdapterTest {
         verify(paymentAttemptRepository).save(attemptCaptor.capture());
         assertThat(attemptCaptor.getValue().getInvoice()).isEqualTo(existingInvoice);
         assertThat(attemptCaptor.getValue().getStatus()).isEqualTo(PaymentAttemptStatus.SUCCEEDED);
+    }
+
+    @Test
+    void createsANewInvoiceAndAFailedPaymentAttemptWhenNoInvoiceExistsYetForTheCycle() {
+        UUID subscriptionId = UUID.randomUUID();
+        LocalDate billingPeriod = LocalDate.of(2026, 7, 31);
+        UUID priceVersionId = UUID.randomUUID();
+        Instant attemptedAt = Instant.parse("2026-08-24T03:00:00Z");
+        when(invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod))
+                .thenReturn(Optional.empty());
+        when(invoiceRepository.save(any(Invoice.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository)
+                .recordFailedCharge(subscriptionId, billingPeriod, priceVersionId, attemptedAt);
+
+        ArgumentCaptor<Invoice> invoiceCaptor = ArgumentCaptor.forClass(Invoice.class);
+        verify(invoiceRepository).save(invoiceCaptor.capture());
+        Invoice createdInvoice = invoiceCaptor.getValue();
+        assertThat(invoiceId).isEqualTo(createdInvoice.getId());
+
+        ArgumentCaptor<PaymentAttempt> attemptCaptor = ArgumentCaptor.forClass(PaymentAttempt.class);
+        verify(paymentAttemptRepository).save(attemptCaptor.capture());
+        assertThat(attemptCaptor.getValue().getStatus()).isEqualTo(PaymentAttemptStatus.FAILED);
+        assertThat(attemptCaptor.getValue().getInvoice()).isEqualTo(createdInvoice);
+    }
+
+    @Test
+    void attachesTheFailedPaymentAttemptToTheExistingInvoiceWithoutCreatingASecondOne() {
+        UUID subscriptionId = UUID.randomUUID();
+        LocalDate billingPeriod = LocalDate.of(2026, 7, 31);
+        Invoice existingInvoice = new Invoice(UUID.randomUUID(), subscriptionId, billingPeriod, UUID.randomUUID());
+        Instant attemptedAt = Instant.parse("2026-08-24T03:00:00Z");
+        when(invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod))
+                .thenReturn(Optional.of(existingInvoice));
+
+        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository)
+                .recordFailedCharge(subscriptionId, billingPeriod, existingInvoice.getPriceVersionId(), attemptedAt);
+
+        assertThat(invoiceId).isEqualTo(existingInvoice.getId());
+        verify(invoiceRepository, never()).save(any());
+        ArgumentCaptor<PaymentAttempt> attemptCaptor = ArgumentCaptor.forClass(PaymentAttempt.class);
+        verify(paymentAttemptRepository).save(attemptCaptor.capture());
+        assertThat(attemptCaptor.getValue().getInvoice()).isEqualTo(existingInvoice);
+        assertThat(attemptCaptor.getValue().getStatus()).isEqualTo(PaymentAttemptStatus.FAILED);
     }
 }

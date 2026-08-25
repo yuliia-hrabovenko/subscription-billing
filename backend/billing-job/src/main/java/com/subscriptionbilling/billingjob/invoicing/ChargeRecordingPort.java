@@ -24,4 +24,19 @@ public interface ChargeRecordingPort {
      */
     void recordSuccessfulCharge(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId,
                                  String gatewayTransactionId, Instant attemptedAt);
+
+    /**
+     * Records a failed charge attempt: creates (or attaches to the existing) Invoice for
+     * {@code (subscriptionId, billingPeriod)} — a first attempt failing still creates the
+     * Invoice, per the "create on first attempt" rule — and appends a failed
+     * PaymentAttempt to it.
+     *
+     * @param subscriptionId the Subscription charged
+     * @param billingPeriod  the Billing Cycle date charged for
+     * @param priceVersionId the PriceVersion charged, snapshotted onto the Invoice
+     * @param attemptedAt    the instant the gateway resolved the charge
+     * @return the id of the Invoice the failed attempt was recorded against, for the
+     *         Dunning hand-off's correlation id
+     */
+    UUID recordFailedCharge(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId, Instant attemptedAt);
 }

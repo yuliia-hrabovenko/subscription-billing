@@ -5,6 +5,7 @@ import com.subscriptionbilling.billingjob.anchor.BillingCycleAdvancePort;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.due.DueSubscriptionsPort;
+import com.subscriptionbilling.billingjob.dunning.DunningHandoff;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
@@ -27,15 +28,23 @@ import java.util.UUID;
  * same code path — none of them go through a {@code @Scheduled} annotation.
  *
  * <p>For every Subscription {@link DueSubscriptionsPort} selects, charges it through
- * {@link PaymentGatewayClient} and, on success, records the Invoice/PaymentAttempt via
- * {@link ChargeRecordingPort} and advances {@code due_date} via {@link
- * BillingCycleAdvancePort} using {@link AnchorDate}'s clamping rule. A decline or
- * transient gateway failure is left for a Dunning hand-off to react to (a later ticket);
- * this runner only skips the advancement for that Subscription.
+ * {@link PaymentGatewayClient}:
+ * <ul>
+ *     <li>Success: records the Invoice/PaymentAttempt via {@link ChargeRecordingPort} and
+ *     advances {@code due_date} via {@link BillingCycleAdvancePort} using {@link
+ *     AnchorDate}'s clamping rule.
+ *     <li>Decline: records a failed PaymentAttempt against the same Invoice (created on
+ *     this first attempt if none exists yet) and hands off to {@link DunningHandoff}.
+ *     Anchor Date and {@code due_date} are left untouched.
+ *     <li>Transient/infra failure: none of the above — no PaymentAttempt, no Dunning
+ *     hand-off, no state change — so a gateway timeout is never misclassified as a
+ *     business decline. Retrying it is Payment Gateway Integration's concern, not this
+ *     runner's.
+ * </ul>
  *
  * <p>One Subscription's charge attempt failing unexpectedly (a port throwing rather
- * than the gateway resolving a decline) is logged, counted against {@code
-     * billing_job_charge_attempt_failures_total}, and skipped rather than aborting the
+ * than the gateway resolving a decline or transient failure) is logged, counted against
+ * {@code billing_job_charge_attempt_failures_total}, and skipped rather than aborting the
  * rest of the day's due Subscriptions.
  */
 @Component
@@ -48,9 +57,11 @@ public class BillingJobRunner {
     private final PaymentGatewayClient paymentGatewayClient;
     private final ChargeRecordingPort chargeRecordingPort;
     private final BillingCycleAdvancePort billingCycleAdvancePort;
+    private final DunningHandoff dunningHandoff;
     private final Clock clock;
     private final Timer jobDuration;
     private final Counter subscriptionsProcessed;
+    private final Counter declinedCharges;
     private final Counter chargeAttemptFailures;
 
     public BillingJobRunner(DueSubscriptionsPort dueSubscriptionsPort,
@@ -58,9 +69,10 @@ public class BillingJobRunner {
                              PaymentGatewayClient paymentGatewayClient,
                              ChargeRecordingPort chargeRecordingPort,
                              BillingCycleAdvancePort billingCycleAdvancePort,
+                             DunningHandoff dunningHandoff,
                              MeterRegistry meterRegistry) {
         this(dueSubscriptionsPort, chargeableSubscriptionPort, paymentGatewayClient, chargeRecordingPort,
-                billingCycleAdvancePort, meterRegistry, Clock.systemUTC());
+                billingCycleAdvancePort, dunningHandoff, meterRegistry, Clock.systemUTC());
     }
 
     BillingJobRunner(DueSubscriptionsPort dueSubscriptionsPort,
@@ -68,6 +80,7 @@ public class BillingJobRunner {
                       PaymentGatewayClient paymentGatewayClient,
                       ChargeRecordingPort chargeRecordingPort,
                       BillingCycleAdvancePort billingCycleAdvancePort,
+                      DunningHandoff dunningHandoff,
                       MeterRegistry meterRegistry,
                       Clock clock) {
         this.dueSubscriptionsPort = dueSubscriptionsPort;
@@ -75,12 +88,16 @@ public class BillingJobRunner {
         this.paymentGatewayClient = paymentGatewayClient;
         this.chargeRecordingPort = chargeRecordingPort;
         this.billingCycleAdvancePort = billingCycleAdvancePort;
+        this.dunningHandoff = dunningHandoff;
         this.clock = clock;
         this.jobDuration = Timer.builder("billing_job_duration_seconds")
                 .description("Wall-clock duration of a single BillingJobRunner#run execution")
                 .register(meterRegistry);
         this.subscriptionsProcessed = Counter.builder("billing_job_subscriptions_processed_total")
                 .description("Subscriptions successfully charged by a BillingJobRunner#run execution")
+                .register(meterRegistry);
+        this.declinedCharges = Counter.builder("billing_job_declined_charges_total")
+                .description("Charge attempts declined by the gateway and handed off to Dunning")
                 .register(meterRegistry);
         this.chargeAttemptFailures = Counter.builder("billing_job_charge_attempt_failures_total")
                 .description("Charge attempts that failed unexpectedly (a port throwing), as opposed to a gateway decline")
@@ -91,7 +108,8 @@ public class BillingJobRunner {
      * Selects every Subscription due for a charge as of today (per {@link
      * DueSubscriptionsPort#findDueSubscriptionIds}) and attempts to charge each one.
      * Timed and counted for the {@code billing_job_duration_seconds}, {@code
-     * billing_job_subscriptions_processed_total}, and {@code
+     * billing_job_subscriptions_processed_total}, {@code
+     * billing_job_declined_charges_total}, and {@code
      * billing_job_charge_attempt_failures_total} Prometheus metrics.
      *
      * @return the ids of every Subscription selected as due, regardless of whether its
@@ -118,15 +136,19 @@ public class BillingJobRunner {
     private void chargeOneCycle(UUID subscriptionId) {
         ChargeableSubscription chargeable = chargeableSubscriptionPort.loadForCharge(subscriptionId);
         ChargeResult result = paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.amount());
-        if (!(result instanceof ChargeResult.Succeeded succeeded)) {
-            // A decline or transient failure leaves the Billing Cycle untouched here;
-            // the Dunning hand-off/failed-PaymentAttempt recording for that path is a
-            // separate ticket's scope.
-            log.info("Charge did not succeed for subscription {}: {}", subscriptionId, result);
-            return;
-        }
-
         Instant attemptedAt = Instant.now(clock);
+        switch (result) {
+            case ChargeResult.Succeeded succeeded -> handleSuccess(subscriptionId, chargeable, succeeded, attemptedAt);
+            case ChargeResult.Declined declined -> handleDecline(subscriptionId, chargeable, declined, attemptedAt);
+            case ChargeResult.FailedTransiently transientFailure ->
+                    // Never treated as a decline: no PaymentAttempt, no Dunning hand-off,
+                    // no state change. Retrying it is Payment Gateway Integration's job.
+                    log.info("Charge failed transiently for subscription {}: {}", subscriptionId, transientFailure.reason());
+        }
+    }
+
+    private void handleSuccess(UUID subscriptionId, ChargeableSubscription chargeable,
+                                ChargeResult.Succeeded succeeded, Instant attemptedAt) {
         chargeRecordingPort.recordSuccessfulCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), succeeded.gatewayTransactionId(), attemptedAt);
 
@@ -134,5 +156,14 @@ public class BillingJobRunner {
         billingCycleAdvancePort.advanceDueDate(subscriptionId, nextDueDate);
 
         subscriptionsProcessed.increment();
+    }
+
+    private void handleDecline(UUID subscriptionId, ChargeableSubscription chargeable,
+                                ChargeResult.Declined declined, Instant attemptedAt) {
+        UUID invoiceId = chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
+                chargeable.priceVersionId(), attemptedAt);
+        dunningHandoff.onChargeFailed(subscriptionId, invoiceId);
+        declinedCharges.increment();
+        log.info("Charge declined for subscription {}: {}", subscriptionId, declined.reason());
     }
 }
