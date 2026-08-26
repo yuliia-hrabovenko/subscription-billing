@@ -1,0 +1,30 @@
+{
+  "name": "stripe-webhook-dispute-created",
+  "request": {
+    "method": "GET",
+    "urlPath": "/stub-fixtures/webhook-events/dispute-created"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": {
+      "id": "evt_3PstripeDispute001",
+      "object": "event",
+      "type": "charge.dispute.created",
+      "created": 1735689600,
+      "livemode": false,
+      "data": {
+        "object": {
+          "id": "dp_3PstripeDispute001",
+          "object": "dispute",
+          "charge": "ch_3PstripeSuccess001",
+          "amount": 1999,
+          "currency": "usd",
+          "reason": "fraudulent",
+          "status": "warning_needs_response",
+          "is_charge_refundable": false
+        }
+      }
+    }
+  }
+}

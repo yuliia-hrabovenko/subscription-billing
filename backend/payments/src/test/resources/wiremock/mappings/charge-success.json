@@ -1,0 +1,34 @@
+{
+  "name": "stripe-charge-success",
+  "request": {
+    "method": "POST",
+    "urlPath": "/v1/charges",
+    "bodyPatterns": [
+      { "contains": "source=tok_visa" }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": {
+      "id": "ch_3PstripeSuccess001",
+      "object": "charge",
+      "amount": 1999,
+      "currency": "usd",
+      "paid": true,
+      "status": "succeeded",
+      "captured": true,
+      "source": {
+        "id": "tok_visa",
+        "object": "card",
+        "brand": "Visa",
+        "last4": "4242"
+      },
+      "outcome": {
+        "network_status": "approved_by_network",
+        "type": "authorized"
+      },
+      "created": 1735689600
+    }
+  }
+}

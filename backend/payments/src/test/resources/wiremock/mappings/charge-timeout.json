@@ -1,0 +1,23 @@
+{
+  "name": "stripe-charge-timeout",
+  "request": {
+    "method": "POST",
+    "urlPath": "/v1/charges",
+    "bodyPatterns": [
+      { "contains": "source=tok_timeout" }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "fixedDelayMilliseconds": 5000,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": {
+      "id": "ch_3PstripeTimeout001",
+      "object": "charge",
+      "amount": 1999,
+      "currency": "usd",
+      "paid": true,
+      "status": "succeeded"
+    }
+  }
+}

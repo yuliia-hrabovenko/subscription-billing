@@ -1,0 +1,24 @@
+{
+  "name": "stripe-charge-declined",
+  "request": {
+    "method": "POST",
+    "urlPath": "/v1/charges",
+    "bodyPatterns": [
+      { "contains": "source=tok_chargeDeclined" }
+    ]
+  },
+  "response": {
+    "status": 402,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": {
+      "error": {
+        "type": "card_error",
+        "code": "card_declined",
+        "decline_code": "generic_decline",
+        "message": "Your card was declined.",
+        "charge": "ch_3PstripeDeclined001",
+        "doc_url": "https://stripe.com/docs/error-codes/card-declined"
+      }
+    }
+  }
+}
