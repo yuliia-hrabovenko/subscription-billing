@@ -15,6 +15,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class CountingPaymentGatewayClient implements PaymentGatewayClient {
 
+    /** Signature header value that always verifies successfully. Any other value fails. */
+    public static final String VALID_SIGNATURE_HEADER = "valid_signature";
+
     private final String declineToken;
     private final String transientFailureToken;
     private final AtomicInteger chargeCount = new AtomicInteger();
@@ -34,6 +37,11 @@ public class CountingPaymentGatewayClient implements PaymentGatewayClient {
             return new ChargeResult.FailedTransiently("gateway_timeout");
         }
         return new ChargeResult.Succeeded("test-txn-" + UUID.randomUUID());
+    }
+
+    @Override
+    public boolean verifyWebhookSignature(String payload, String signatureHeader) {
+        return VALID_SIGNATURE_HEADER.equals(signatureHeader);
     }
 
     /** @return the number of {@link #charge} calls made so far across this test's Spring context. */

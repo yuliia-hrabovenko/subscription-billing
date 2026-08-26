@@ -8,8 +8,9 @@ import java.util.UUID;
  * before the real gateway adapter exists. Never calls an actual gateway; the outcome is
  * selected deterministically by {@code paymentMethodToken} so a test can drive each {@link
  * ChargeResult} case without stubbing an HTTP call. Any token other than {@link
- * #DECLINE_TOKEN} or {@link #TRANSIENT_FAILURE_TOKEN} succeeds. Confined to test sources so
- * it can never be mistaken for, or deployed as, the production adapter.
+ * #DECLINE_TOKEN} or {@link #TRANSIENT_FAILURE_TOKEN} succeeds. Signature verification is
+ * likewise deterministic: only {@link #VALID_SIGNATURE_HEADER} passes. Confined to test
+ * sources so it can never be mistaken for, or deployed as, the production adapter.
  */
 public class FakePaymentGatewayClient implements PaymentGatewayClient {
 
@@ -18,6 +19,9 @@ public class FakePaymentGatewayClient implements PaymentGatewayClient {
 
     /** Card-on-file token that always resolves to {@link ChargeResult.FailedTransiently}. */
     public static final String TRANSIENT_FAILURE_TOKEN = "tok_transient_failure";
+
+    /** Signature header value that always verifies successfully. Any other value fails. */
+    public static final String VALID_SIGNATURE_HEADER = "valid_signature";
 
     @Override
     public ChargeResult charge(String paymentMethodToken, BigDecimal amount) {
@@ -28,5 +32,10 @@ public class FakePaymentGatewayClient implements PaymentGatewayClient {
             return new ChargeResult.FailedTransiently("gateway_timeout");
         }
         return new ChargeResult.Succeeded("fake-txn-" + UUID.randomUUID());
+    }
+
+    @Override
+    public boolean verifyWebhookSignature(String payload, String signatureHeader) {
+        return VALID_SIGNATURE_HEADER.equals(signatureHeader);
     }
 }
