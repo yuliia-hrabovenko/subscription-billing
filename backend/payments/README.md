@@ -1,4 +1,14 @@
-# payments — shared Stripe gateway test double
+# payments — Stripe gateway adapter and shared test double
+
+`StripePaymentGatewayClient` (`src/main/java/.../gateway/StripePaymentGatewayClient.java`)
+is the real `PaymentGatewayClient` adapter, charging through Stripe's `POST /v1/charges`
+endpoint. `StripeGatewayAutoConfiguration` registers it as the `PaymentGatewayClient` bean
+in any Spring context that doesn't already define one (a Spring Boot auto-configuration,
+so it always backs off behind an explicitly wired fake). Connection settings are
+`StripeProperties` (prefix `billing.payments.stripe`); `apiKey` is overridden via the
+`STRIPE_API_KEY` environment variable in real environments — see `api`'s
+`application.yml`. Test vs. live mode is determined by which kind of secret key is
+configured, not by a different `baseUrl`.
 
 `StripeGatewayStub` (`src/test/java/.../stub/StripeGatewayStub.java`) and its WireMock
 mappings (`src/test/resources/wiremock/mappings/*.json`) are packaged into this module's
