@@ -191,6 +191,49 @@ class SubscriptionTest {
     }
 
     @Test
+    void applyPendingPlanChangeToAStillPaidPlanSwitchesPlanClearsPendingAndLeavesTheBillingCycleUntouched() {
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
+        Plan targetPlan = new Plan(UUID.randomUUID(), "enterprise", "Enterprise");
+        subscription.schedulePlanChange(targetPlan, false, Instant.now());
+        Instant anchorBeforeApplying = subscription.getBillingCycleAnchor();
+        subscription.advanceDueDate(LocalDate.of(2026, 8, 24));
+
+        subscription.applyPendingPlanChange(false);
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(subscription.getPlan()).isEqualTo(targetPlan);
+        assertThat(subscription.getPendingPlanChange()).isNull();
+        assertThat(subscription.getBillingCycleAnchor()).isEqualTo(anchorBeforeApplying);
+        assertThat(subscription.getDueDate()).isEqualTo(LocalDate.of(2026, 8, 24));
+    }
+
+    @Test
+    void applyPendingPlanChangeToAFreePlanSwitchesPlanAndClearsTheBillingCycleAndDueDate() {
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
+        Plan freePlan = new Plan(UUID.randomUUID(), "free", "Free");
+        subscription.schedulePlanChange(freePlan, true, Instant.now());
+        subscription.advanceDueDate(LocalDate.of(2026, 8, 24));
+
+        subscription.applyPendingPlanChange(true);
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(subscription.getPlan()).isEqualTo(freePlan);
+        assertThat(subscription.getPendingPlanChange()).isNull();
+        assertThat(subscription.getBillingCycleAnchor()).isNull();
+        assertThat(subscription.getDueDate()).isNull();
+    }
+
+    @Test
+    void applyPendingPlanChangeWithNothingPendingIsRejected() {
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
+
+        assertThatThrownBy(() -> subscription.applyPendingPlanChange(false))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(subscription.getPlan()).isEqualTo(plan);
+    }
+
+    @Test
     void suspendFromTrialingTransitionsImmediatelyToSuspended() {
         Subscription subscription = Subscription.startTrial(UUID.randomUUID(), customer, plan, Instant.now());
 

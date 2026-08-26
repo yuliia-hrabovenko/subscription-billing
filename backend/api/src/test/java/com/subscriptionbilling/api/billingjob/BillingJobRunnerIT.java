@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -358,6 +359,80 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
             assertThat(entry.getOldState()).isEqualTo("TRIALING");
             assertThat(entry.getNewState()).isEqualTo("SUSPENDED");
         });
+    }
+
+    @Test
+    void aPendingPaidToPaidPlanChangeIsChargedAtTheNewPlansPriceOnItsDueDateAndSwitchesThePlanAfterward() {
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        Plan enterprisePlan = seedPaidPlan("enterprise-" + UUID.randomUUID(), "Enterprise", new BigDecimal("49.00"));
+        LocalDate billingPeriod = LocalDate.of(2026, 7, 10);
+        Subscription subscription = seedDueSubscription(proPlan, Instant.parse("2026-07-10T00:00:00Z"), billingPeriod);
+        subscription.schedulePlanChange(enterprisePlan, false, Instant.now());
+        subscriptionRepository.saveAndFlush(subscription);
+        PriceVersion enterprisePrice = priceVersionRepository
+                .findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
+                        enterprisePlan.getId(), billingPeriod.atStartOfDay(ZoneOffset.UTC).toInstant())
+                .orElseThrow();
+
+        billingJobRunner.run();
+
+        Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
+        assertThat(reloaded.getPlan().getId()).isEqualTo(enterprisePlan.getId());
+        assertThat(reloaded.getPendingPlanChange()).isNull();
+
+        Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod);
+        assertThat(invoice).isPresent();
+        assertThat(invoice.get().getPriceVersionId()).isEqualTo(enterprisePrice.getId());
+        List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
+        assertThat(attempts).singleElement().satisfies(attempt ->
+                assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.SUCCEEDED));
+
+        List<AuditLogEntry> entries = auditLogEntryRepository.findBySubscriptionId(subscription.getId());
+        assertThat(entries).anySatisfy(entry -> {
+            assertThat(entry.getOldState()).isEqualTo(proPlan.getCode());
+            assertThat(entry.getNewState()).isEqualTo(enterprisePlan.getCode());
+        });
+    }
+
+    @Test
+    void aPendingDowngradeToFreeBecomesFreeOnItsDueDateWithNoChargeAttemptAndNoInvoice() {
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        Plan freePlan = planRepository.findByCode("free").orElseThrow();
+        LocalDate billingPeriod = LocalDate.of(2026, 7, 12);
+        Subscription subscription = seedDueSubscription(proPlan, Instant.parse("2026-07-12T00:00:00Z"), billingPeriod);
+        subscription.schedulePlanChange(freePlan, true, Instant.now());
+        subscriptionRepository.saveAndFlush(subscription);
+        int chargesBefore = paymentGatewayClient.chargeCount();
+
+        billingJobRunner.run();
+
+        Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
+        assertThat(reloaded.getPlan().getId()).isEqualTo(freePlan.getId());
+        assertThat(reloaded.getPendingPlanChange()).isNull();
+        assertThat(reloaded.getBillingCycleAnchor()).isNull();
+        assertThat(reloaded.getDueDate()).isNull();
+        assertThat(reloaded.getState()).isEqualTo(SubscriptionState.ACTIVE);
+
+        assertThat(invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod)).isEmpty();
+        assertThat(paymentGatewayClient.chargeCount()).isEqualTo(chargesBefore);
+
+        List<AuditLogEntry> entries = auditLogEntryRepository.findBySubscriptionId(subscription.getId());
+        assertThat(entries).anySatisfy(entry -> {
+            assertThat(entry.getOldState()).isEqualTo(proPlan.getCode());
+            assertThat(entry.getNewState()).isEqualTo(freePlan.getCode());
+        });
+    }
+
+    /**
+     * The seeded catalog (V7 migration) only has {@code free} and {@code pro} — a
+     * paid-to-paid plan change needs a third, already-available, priced Plan.
+     */
+    private Plan seedPaidPlan(String code, String name, BigDecimal amount) {
+        Plan plan = new Plan(UUID.randomUUID(), code, name);
+        planRepository.saveAndFlush(plan);
+        priceVersionRepository.saveAndFlush(
+                new PriceVersion(UUID.randomUUID(), plan, amount, Instant.parse("2026-01-01T00:00:00Z")));
+        return plan;
     }
 
     private Subscription seedSubscription(Plan plan, LocalDate dueDate) {

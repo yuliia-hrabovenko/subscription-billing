@@ -255,6 +255,32 @@ public class Subscription {
     }
 
     /**
+     * Applies whatever Plan change is pending, at the Billing Cycle boundary the caller
+     * has determined this Subscription has reached. Always switches {@link #plan} to
+     * {@link #pendingPlanChange} and clears the pending field. When the target Plan is
+     * free, also clears {@link #billingCycleAnchor} and {@code due_date} — a free
+     * Subscription has neither — since the change ends the Billing Cycle rather than
+     * continuing it into a new price. When the target Plan is still paid, both are left
+     * untouched so the caller can charge this cycle at the new Plan's price and advance
+     * them afterward. {@code state} never changes: a plan change (unlike free-to-paid
+     * signup) never itself activates or suspends a Subscription.
+     *
+     * @param targetPlanIsFree whether the pending Plan's current price is zero
+     * @throws IllegalStateException if no Plan change is pending
+     */
+    public void applyPendingPlanChange(boolean targetPlanIsFree) {
+        if (pendingPlanChange == null) {
+            throw new IllegalStateException("Subscription " + id + " has no pending plan change to apply");
+        }
+        plan = pendingPlanChange;
+        pendingPlanChange = null;
+        if (targetPlanIsFree) {
+            billingCycleAnchor = null;
+            dueDate = null;
+        }
+    }
+
+    /**
      * The {@code trialing -> suspended} and {@code active -> suspended} edges, taken
      * when a renewal or Trial-conversion charge fails. No grace period: this is the
      * only way a Subscription reaches {@code suspended}. {@link #billingCycleAnchor}
