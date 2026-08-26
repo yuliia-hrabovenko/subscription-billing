@@ -17,6 +17,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Clock;
@@ -69,6 +70,7 @@ public class BillingJobRunner {
     private final Counter duplicateChargesSkipped;
     private final Counter chargeAttemptFailures;
 
+    @Autowired
     public BillingJobRunner(DueSubscriptionsPort dueSubscriptionsPort,
                              PendingPlanChangePort pendingPlanChangePort,
                              ChargeableSubscriptionPort chargeableSubscriptionPort,

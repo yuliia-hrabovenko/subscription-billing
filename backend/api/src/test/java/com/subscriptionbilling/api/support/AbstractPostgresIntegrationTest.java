@@ -28,7 +28,7 @@ import org.testcontainers.utility.DockerImageName;
 public abstract class AbstractPostgresIntegrationTest {
 
     @ServiceConnection
-    static final PostgreSQLContainer<?> POSTGRES =
+    protected static final PostgreSQLContainer<?> POSTGRES =
             new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"));
 
     static {

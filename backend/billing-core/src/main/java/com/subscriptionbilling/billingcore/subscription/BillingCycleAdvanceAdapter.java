@@ -4,6 +4,7 @@ import com.subscriptionbilling.audit.ActorType;
 import com.subscriptionbilling.audit.AuditLogEntry;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
 import com.subscriptionbilling.billingjob.anchor.BillingCycleAdvancePort;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,6 +30,7 @@ public class BillingCycleAdvanceAdapter implements BillingCycleAdvancePort {
     private final AuditLogEntryRepository auditLogEntryRepository;
     private final Clock clock;
 
+    @Autowired
     public BillingCycleAdvanceAdapter(SubscriptionRepository subscriptionRepository,
                                        AuditLogEntryRepository auditLogEntryRepository) {
         this(subscriptionRepository, auditLogEntryRepository, Clock.systemUTC());

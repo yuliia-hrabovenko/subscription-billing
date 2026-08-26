@@ -1,0 +1,58 @@
+# Daily billing job, run through
+# the same `--job=billing-run` entry point as the manual trigger (`make billing-job`)
+# and the BillingJobEntryPointIT integration test -- see ApiApplication#main.
+#
+# `image` is a build-pipeline placeholder; replace with the pushed tag at deploy time.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: billing-job
+  labels:
+    app.kubernetes.io/name: billing-job
+    app.kubernetes.io/part-of: subscription-billing
+spec:
+  # ~03:00 UTC, off-peak (ADR-0001).
+  schedule: "0 3 * * *"
+  timeZone: "UTC"
+  # Two overlapping runs can never double-charge -- the database uniqueness constraint
+  # on (subscription_id, billing_period) already guarantees that -- but Forbid keeps
+  # this manifest the infra-level backstop, not a second thing relying on that alone.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # Bounded retries are safe here for the same idempotency reason as Forbid above --
+      # a retried run cannot double-charge a Subscription already invoiced this cycle.
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: billing-job
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: billing-job
+              image: subscription-billing-api:latest
+              args: ["--job=billing-run"]
+              env:
+                - name: DB_HOST
+                  valueFrom: { secretKeyRef: { name: subscription-billing-secrets, key: db-host } }
+                - name: DB_PORT
+                  valueFrom: { secretKeyRef: { name: subscription-billing-secrets, key: db-port } }
+                - name: DB_NAME
+                  valueFrom: { secretKeyRef: { name: subscription-billing-secrets, key: db-name } }
+                - name: DB_USERNAME
+                  valueFrom: { secretKeyRef: { name: subscription-billing-secrets, key: db-username } }
+                - name: DB_PASSWORD
+                  valueFrom: { secretKeyRef: { name: subscription-billing-secrets, key: db-password } }
+                - name: JWT_SECRET
+                  valueFrom: { secretKeyRef: { name: subscription-billing-secrets, key: jwt-secret } }
+              resources:
+                requests:
+                  cpu: "250m"
+                  memory: "512Mi"
+                limits:
+                  memory: "1Gi"
