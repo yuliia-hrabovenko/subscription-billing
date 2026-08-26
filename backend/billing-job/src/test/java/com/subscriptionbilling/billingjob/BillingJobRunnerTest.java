@@ -9,6 +9,8 @@ import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
+import com.subscriptionbilling.billingjob.planchange.PendingPlanChangeOutcome;
+import com.subscriptionbilling.billingjob.planchange.PendingPlanChangePort;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -48,6 +50,9 @@ class BillingJobRunnerTest {
     private DueSubscriptionsPort dueSubscriptionsPort;
 
     @Mock
+    private PendingPlanChangePort pendingPlanChangePort;
+
+    @Mock
     private ChargeableSubscriptionPort chargeableSubscriptionPort;
 
     @Mock
@@ -65,8 +70,9 @@ class BillingJobRunnerTest {
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     private BillingJobRunner runner() {
-        return new BillingJobRunner(dueSubscriptionsPort, chargeableSubscriptionPort, paymentGatewayClient,
-                chargeRecordingPort, billingCycleAdvancePort, dunningHandoff, meterRegistry, FIXED_CLOCK);
+        return new BillingJobRunner(dueSubscriptionsPort, pendingPlanChangePort, chargeableSubscriptionPort,
+                paymentGatewayClient, chargeRecordingPort, billingCycleAdvancePort, dunningHandoff, meterRegistry,
+                FIXED_CLOCK);
     }
 
     @Test
@@ -312,6 +318,48 @@ class BillingJobRunnerTest {
         assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
         assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_charge_attempt_failures_total").counter().count()).isEqualTo(0.0);
+    }
+
+    @Test
+    void aPendingPlanChangeAppliedToAFreePlanSkipsTheChargeAttemptEntirely() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(pendingPlanChangePort.applyIfPending(subscriptionId)).thenReturn(PendingPlanChangeOutcome.APPLIED_FREE);
+
+        runner().run();
+
+        verify(chargeableSubscriptionPort, never()).loadForCharge(any());
+        verify(paymentGatewayClient, never()).charge(any(), any());
+        verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
+        verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any());
+        assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
+    }
+
+    @Test
+    void aPendingPlanChangeAppliedToAStillPaidPlanProceedsToChargeThisCycle() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(pendingPlanChangePort.applyIfPending(subscriptionId)).thenReturn(PendingPlanChangeOutcome.APPLIED_PAID);
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+
+        runner().run();
+
+        verify(chargeRecordingPort).recordSuccessfulCharge(eq(subscriptionId), any(), any(), any(), any());
+        assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void noPendingPlanChangeProceedsToChargeAsNormal() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(pendingPlanChangePort.applyIfPending(subscriptionId)).thenReturn(PendingPlanChangeOutcome.NO_PENDING_CHANGE);
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+
+        runner().run();
+
+        verify(chargeRecordingPort).recordSuccessfulCharge(eq(subscriptionId), any(), any(), any(), any());
     }
 
     private ChargeableSubscription chargeable(UUID subscriptionId) {
