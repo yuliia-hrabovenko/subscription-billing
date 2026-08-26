@@ -4,6 +4,7 @@ import com.subscriptionbilling.billingcore.plan.PriceVersion;
 import com.subscriptionbilling.billingcore.plan.PriceVersionRepository;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,6 +30,7 @@ public class ChargeableSubscriptionAdapter implements ChargeableSubscriptionPort
     private final PriceVersionRepository priceVersionRepository;
     private final Clock clock;
 
+    @Autowired
     public ChargeableSubscriptionAdapter(SubscriptionRepository subscriptionRepository,
                                           PriceVersionRepository priceVersionRepository) {
         this(subscriptionRepository, priceVersionRepository, Clock.systemUTC());
