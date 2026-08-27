@@ -58,4 +58,15 @@ public interface ChargeRecordingPort {
      *         another job instance recording this same cycle concurrently
      */
     UUID recordFailedCharge(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId, Instant attemptedAt);
+
+    /**
+     * Records that one more Dunning retry Payment Attempt has been made against the
+     * Invoice identified by {@code invoiceId} — its failed PaymentAttempt already
+     * appended by a preceding {@link #recordFailedCharge} call — incrementing its
+     * retry counter.
+     *
+     * @param invoiceId the Invoice a scheduled Dunning retry was just attempted against
+     * @return the Invoice's retry bookkeeping immediately after recording this attempt
+     */
+    DunningRetryState recordRetryAttempt(UUID invoiceId);
 }

@@ -6,10 +6,12 @@ import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.due.DueSubscriptionsPort;
 import com.subscriptionbilling.billingjob.dunning.DunningHandoff;
+import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
+import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
 import com.subscriptionbilling.billingjob.planchange.PendingPlanChangeOutcome;
 import com.subscriptionbilling.billingjob.planchange.PendingPlanChangePort;
 import io.micrometer.core.instrument.Counter;
@@ -34,15 +36,24 @@ import java.util.UUID;
  * <p>For each Subscription {@link DueSubscriptionsPort} selects: a pending Plan change is
  * applied first via {@link PendingPlanChangePort}, so any charge reflects the new Plan. A
  * change onto a free Plan ends processing there — no charge is attempted. Otherwise, a
- * Subscription already invoiced for this Billing Cycle is skipped, and the charge goes
- * through {@link PaymentGatewayClient} — a Trial's auto-conversion charge follows the
- * exact same path as an ordinary renewal:
+ * {@link ChargeableSubscriptionPort#loadForCharge} call resolves whether this is an
+ * ordinary renewal/Trial-conversion charge or a due Dunning retry (a {@code suspended}
+ * Subscription — see {@link ChargeableSubscription#dunningRetry()}), which decides which
+ * outcome handling below applies; a non-retry Subscription already invoiced for this
+ * Billing Cycle is skipped rather than charged again. Either way the charge goes through
+ * {@link PaymentGatewayClient}:
  * <ul>
  *     <li>Success: records the Invoice/PaymentAttempt via {@link ChargeRecordingPort} and
  *     advances {@code due_date} via {@link BillingCycleAdvancePort} using {@link
- *     AnchorDate}'s clamping rule.
- *     <li>Decline: records a failed PaymentAttempt and hands off to {@link DunningHandoff};
- *     the Anchor Date and {@code due_date} are left unchanged.
+ *     AnchorDate}'s clamping rule — for a Dunning retry this same call also restores the
+ *     Subscription to {@code active} (see {@link
+ *     com.subscriptionbilling.billingjob.anchor.BillingCycleAdvancePort}'s contract).
+ *     <li>Decline (not a retry): records a failed PaymentAttempt and hands off to {@link
+ *     DunningHandoff#onChargeFailed}, which suspends the Subscription and schedules its
+ *     day-1 retry; the Anchor Date and {@code due_date} are left unchanged.
+ *     <li>Decline (a retry): records a failed PaymentAttempt against the same Invoice and
+ *     hands off to {@link DunningHandoff#onRetryFailed}, which either reschedules the next
+ *     Dunning offset or, once the bound is reached, cancels the Subscription.
  *     <li>Transient/infra failure: no PaymentAttempt, no Dunning hand-off, no state
  *     change — never treated as a decline.
  * </ul>
@@ -69,6 +80,9 @@ public class BillingJobRunner {
     private final Counter declinedCharges;
     private final Counter duplicateChargesSkipped;
     private final Counter chargeAttemptFailures;
+    private final Counter dunningAttempts;
+    private final Counter dunningRecoveries;
+    private final Counter dunningExhaustions;
 
     @Autowired
     public BillingJobRunner(DueSubscriptionsPort dueSubscriptionsPort,
@@ -116,6 +130,15 @@ public class BillingJobRunner {
         this.chargeAttemptFailures = Counter.builder("billing_job_charge_attempt_failures_total")
                 .description("Charge attempts that failed unexpectedly (a port throwing), as opposed to a gateway decline")
                 .register(meterRegistry);
+        this.dunningAttempts = Counter.builder("billing_job_dunning_attempts_total")
+                .description("Scheduled Dunning retry charge attempts (day 1/3/7), regardless of outcome")
+                .register(meterRegistry);
+        this.dunningRecoveries = Counter.builder("billing_job_dunning_recoveries_total")
+                .description("Scheduled Dunning retries that succeeded, restoring the Subscription to active")
+                .register(meterRegistry);
+        this.dunningExhaustions = Counter.builder("billing_job_dunning_exhaustions_total")
+                .description("Subscriptions canceled because their Dunning retries were exhausted")
+                .register(meterRegistry);
     }
 
     /**
@@ -153,7 +176,10 @@ public class BillingJobRunner {
         }
 
         ChargeableSubscription chargeable = chargeableSubscriptionPort.loadForCharge(subscriptionId);
-        if (chargeRecordingPort.invoiceAlreadyRecorded(subscriptionId, chargeable.billingPeriod())) {
+        // A Dunning retry's Invoice always already exists for its billing period (it was
+        // created by the initial failure this retry is attached to) -- this pre-check
+        // only guards a fresh renewal/Trial-conversion cycle against being invoiced twice.
+        if (!chargeable.dunningRetry() && chargeRecordingPort.invoiceAlreadyRecorded(subscriptionId, chargeable.billingPeriod())) {
             // A prior run (this one resumed after a crash, or another overlapping
             // instance) already recorded an outcome for this cycle -- never call the
             // gateway again for it.
@@ -190,18 +216,39 @@ public class BillingJobRunner {
         chargeRecordingPort.recordSuccessfulCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), succeeded.gatewayTransactionId(), attemptedAt);
 
+        // Also restores a Dunning retry's Subscription from suspended to active -- see
+        // BillingCycleAdvancePort's contract, driven entirely by the persisted
+        // Subscription's own state, not by anything branched on here.
         LocalDate nextDueDate = new AnchorDate(chargeable.anchorDayOfMonth()).next(chargeable.billingPeriod());
         billingCycleAdvancePort.advanceDueDate(subscriptionId, nextDueDate, succeeded.gatewayTransactionId());
 
-        subscriptionsProcessed.increment();
+        if (chargeable.dunningRetry()) {
+            dunningAttempts.increment();
+            dunningRecoveries.increment();
+            log.info("Dunning retry succeeded for subscription {}: restored to active", subscriptionId);
+        } else {
+            subscriptionsProcessed.increment();
+        }
     }
 
     private void handleDecline(UUID subscriptionId, ChargeableSubscription chargeable,
                                 ChargeResult.Declined declined, Instant attemptedAt) {
         UUID invoiceId = chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), attemptedAt);
-        dunningHandoff.onChargeFailed(subscriptionId, invoiceId, attemptedAt);
-        declinedCharges.increment();
-        log.info("Charge declined for subscription {}: {}", subscriptionId, declined.reason());
+        if (chargeable.dunningRetry()) {
+            dunningAttempts.increment();
+            DunningRetryState retryState = chargeRecordingPort.recordRetryAttempt(invoiceId);
+            DunningRetryOutcome outcome = dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, attemptedAt);
+            if (outcome == DunningRetryOutcome.CANCELED) {
+                dunningExhaustions.increment();
+                log.info("Dunning retries exhausted for subscription {}: canceled", subscriptionId);
+            } else {
+                log.info("Dunning retry declined for subscription {}: rescheduled", subscriptionId);
+            }
+        } else {
+            dunningHandoff.onChargeFailed(subscriptionId, invoiceId, chargeable.billingPeriod(), attemptedAt);
+            declinedCharges.increment();
+            log.info("Charge declined for subscription {}: {}", subscriptionId, declined.reason());
+        }
     }
 }

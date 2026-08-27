@@ -5,10 +5,12 @@ import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.due.DueSubscriptionsPort;
 import com.subscriptionbilling.billingjob.dunning.DunningHandoff;
+import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
+import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
 import com.subscriptionbilling.billingjob.planchange.PendingPlanChangeOutcome;
 import com.subscriptionbilling.billingjob.planchange.PendingPlanChangePort;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -20,6 +22,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -171,7 +174,7 @@ class BillingJobRunnerTest {
 
         verify(chargeRecordingPort).recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), FIXED_CLOCK.instant());
-        verify(dunningHandoff).onChargeFailed(subscriptionId, invoiceId, FIXED_CLOCK.instant());
+        verify(dunningHandoff).onChargeFailed(subscriptionId, invoiceId, chargeable.billingPeriod(), FIXED_CLOCK.instant());
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
         verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
@@ -190,7 +193,7 @@ class BillingJobRunnerTest {
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
         verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any());
         verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
-        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any());
+        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
     }
 
@@ -202,7 +205,7 @@ class BillingJobRunnerTest {
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(any(), any(), any(), any())).thenReturn(UUID.randomUUID());
         org.mockito.Mockito.doThrow(new IllegalStateException("dunning unavailable"))
-                .when(dunningHandoff).onChargeFailed(any(), any(), any());
+                .when(dunningHandoff).onChargeFailed(any(), any(), any(), any());
 
         runner().run();
 
@@ -261,7 +264,7 @@ class BillingJobRunnerTest {
 
         verify(paymentGatewayClient, never()).charge(any(), any());
         verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
-        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any());
+        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
     }
 
@@ -314,7 +317,7 @@ class BillingJobRunnerTest {
 
         runner().run();
 
-        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any());
+        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
         assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_charge_attempt_failures_total").counter().count()).isEqualTo(0.0);
@@ -362,8 +365,94 @@ class BillingJobRunnerTest {
         verify(chargeRecordingPort).recordSuccessfulCharge(eq(subscriptionId), any(), any(), any(), any());
     }
 
+    @Test
+    void aSuccessfulDunningRetryRecordsItAdvancesTheBillingCycleAndIncrementsAttemptAndRecoveryCountersNotSubscriptionsProcessed() {
+        UUID subscriptionId = UUID.randomUUID();
+        ChargeableSubscription retryChargeable = dunningRetryChargeable(subscriptionId);
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(retryChargeable);
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+
+        runner().run();
+
+        verify(chargeRecordingPort).recordSuccessfulCharge(eq(subscriptionId), eq(retryChargeable.billingPeriod()),
+                any(), eq("gw-txn-1"), any());
+        verify(billingCycleAdvancePort).advanceDueDate(eq(subscriptionId), any(), eq("gw-txn-1"));
+        assertThat(meterRegistry.get("billing_job_dunning_attempts_total").counter().count()).isEqualTo(1.0);
+        assertThat(meterRegistry.get("billing_job_dunning_recoveries_total").counter().count()).isEqualTo(1.0);
+        assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
+    }
+
+    @Test
+    void aFailedDunningRetryRecordsAgainstTheSameInvoiceAndReschedulesWhenNotExhausted() {
+        UUID subscriptionId = UUID.randomUUID();
+        UUID invoiceId = UUID.randomUUID();
+        ChargeableSubscription retryChargeable = dunningRetryChargeable(subscriptionId);
+        DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 1, false);
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(retryChargeable);
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(chargeRecordingPort.recordFailedCharge(subscriptionId, retryChargeable.billingPeriod(),
+                retryChargeable.priceVersionId(), FIXED_CLOCK.instant())).thenReturn(invoiceId);
+        when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
+        when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, FIXED_CLOCK.instant()))
+                .thenReturn(DunningRetryOutcome.RESCHEDULED);
+
+        runner().run();
+
+        verify(chargeRecordingPort).recordRetryAttempt(invoiceId);
+        verify(dunningHandoff).onRetryFailed(subscriptionId, invoiceId, retryState, FIXED_CLOCK.instant());
+        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any());
+        assertThat(meterRegistry.get("billing_job_dunning_attempts_total").counter().count()).isEqualTo(1.0);
+        assertThat(meterRegistry.get("billing_job_dunning_exhaustions_total").counter().count()).isEqualTo(0.0);
+        assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
+    }
+
+    @Test
+    void aFailedDunningRetryThatExhaustsTheBoundIncrementsTheExhaustionCounter() {
+        UUID subscriptionId = UUID.randomUUID();
+        UUID invoiceId = UUID.randomUUID();
+        ChargeableSubscription retryChargeable = dunningRetryChargeable(subscriptionId);
+        DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 3, true);
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(retryChargeable);
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(chargeRecordingPort.recordFailedCharge(subscriptionId, retryChargeable.billingPeriod(),
+                retryChargeable.priceVersionId(), FIXED_CLOCK.instant())).thenReturn(invoiceId);
+        when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
+        when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, FIXED_CLOCK.instant()))
+                .thenReturn(DunningRetryOutcome.CANCELED);
+
+        runner().run();
+
+        assertThat(meterRegistry.get("billing_job_dunning_attempts_total").counter().count()).isEqualTo(1.0);
+        assertThat(meterRegistry.get("billing_job_dunning_exhaustions_total").counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void aDunningRetryIsNeverSkippedAsAlreadyInvoicedEvenThoughItsInvoiceAlreadyExists() {
+        // Unlike a fresh renewal, a due Dunning retry's Invoice always already exists
+        // (created by the initial failure) -- the duplicate-run pre-check must not
+        // mistake that for "already recorded, skip" or no retry would ever charge.
+        UUID subscriptionId = UUID.randomUUID();
+        ChargeableSubscription retryChargeable = dunningRetryChargeable(subscriptionId);
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(retryChargeable);
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+
+        runner().run();
+
+        verify(chargeRecordingPort, never()).invoiceAlreadyRecorded(any(), any());
+        verify(paymentGatewayClient).charge(any(), any());
+    }
+
     private ChargeableSubscription chargeable(UUID subscriptionId) {
         return new ChargeableSubscription(
                 subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24);
+    }
+
+    private ChargeableSubscription dunningRetryChargeable(UUID subscriptionId) {
+        return new ChargeableSubscription(
+                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24, true);
     }
 }

@@ -66,6 +66,16 @@ public class Subscription {
     @Column(name = "due_date")
     private LocalDate dueDate;
 
+    /**
+     * The original Billing Cycle date a Dunning retry is being attempted for, distinct
+     * from {@link #dueDate} once {@link #suspend} has repurposed that field to hold the
+     * next scheduled retry date instead. Non-null exactly while {@code state} is {@link
+     * SubscriptionState#SUSPENDED} (the only way this state is reached); cleared on
+     * recovery ({@link #applySuccessfulCharge}) or cancellation ({@link #cancel()}).
+     */
+    @Column(name = "dunning_billing_period")
+    private LocalDate dunningBillingPeriod;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -187,10 +197,11 @@ public class Subscription {
         // fails to compile instead of silently no-op'ing at runtime.
         state = switch (state) {
             case TRIALING, SUSPENDED -> {
-                // Both cleared: a canceled Subscription never carries either, regardless
-                // of which one this originating state happened to hold.
+                // All cleared: a canceled Subscription never carries any of these,
+                // regardless of which originating state happened to hold them.
                 trialEndsAt = null;
                 billingCycleAnchor = null;
+                dunningBillingPeriod = null;
                 yield SubscriptionState.CANCELED;
             }
             case ACTIVE -> billingCycleAnchor != null ? SubscriptionState.PENDING_CANCELLATION : SubscriptionState.CANCELED;
@@ -285,16 +296,21 @@ public class Subscription {
      * when a renewal or Trial-conversion charge fails. No grace period: this is the
      * only way a Subscription reaches {@code suspended}. {@link #billingCycleAnchor}
      * is left untouched, so a later successful Payment Attempt can restore {@code
-     * active} without re-anchoring the Billing Cycle.
+     * active} without re-anchoring the Billing Cycle. {@code billingPeriod} is
+     * remembered as {@link #dunningBillingPeriod} so a later Dunning retry (which
+     * repurposes {@link #dueDate} for its own scheduling) still knows which Billing
+     * Cycle it belongs to.
      *
+     * @param billingPeriod the Billing Cycle date whose charge just failed
      * @throws SubscriptionNotEligibleForSuspensionException if not currently {@code
      *         trialing} or {@code active}
      */
-    public void suspend() {
+    public void suspend(LocalDate billingPeriod) {
         if (state != SubscriptionState.TRIALING && state != SubscriptionState.ACTIVE) {
             throw new SubscriptionNotEligibleForSuspensionException(id, state);
         }
         state = SubscriptionState.SUSPENDED;
+        dunningBillingPeriod = billingPeriod;
     }
 
     /**
@@ -323,14 +339,17 @@ public class Subscription {
     }
 
     /**
-     * The success-path update applied after every successful charge, a Trial's
-     * auto-conversion charge and an ordinary renewal alike, through one call so
-     * neither the billing job nor its ports branch on which one they're driving. A
-     * {@code trialing} Subscription is converted: moved to {@code active}, its Trial
-     * cleared, and its first Billing Cycle opened anchored to {@code chargedAt}
-     * (Invariant 5 — a trialing Subscription carries no Billing Cycle until this). An
-     * already-{@code active} Subscription (a renewal) is left as is by that part. Either
-     * way, {@code due_date} advances to {@code nextDueDate}.
+     * The success-path update applied after every successful charge — a Trial's
+     * auto-conversion charge, an ordinary renewal, and a suspended Subscription's
+     * Dunning retry recovery alike — through one call so neither the billing job nor
+     * its ports branch on which one they're driving. A {@code trialing} Subscription is
+     * converted: moved to {@code active}, its Trial cleared, and its first Billing
+     * Cycle opened anchored to {@code chargedAt} (Invariant 5 — a trialing Subscription
+     * carries no Billing Cycle until this). A {@code suspended} Subscription recovers:
+     * moved to {@code active} and {@link #dunningBillingPeriod} cleared, leaving {@link
+     * #billingCycleAnchor} untouched (unchanged since {@link #suspend}). An
+     * already-{@code active} Subscription (a renewal) is left as is by that part.
+     * Either way, {@code due_date} advances to {@code nextDueDate}.
      *
      * @param chargedAt   the instant this successful charge was resolved; becomes the
      *                    new Billing Cycle's Anchor Date when converting from a Trial,
@@ -343,6 +362,9 @@ public class Subscription {
             state = SubscriptionState.ACTIVE;
             trialEndsAt = null;
             billingCycleAnchor = chargedAt;
+        } else if (state == SubscriptionState.SUSPENDED) {
+            state = SubscriptionState.ACTIVE;
+            dunningBillingPeriod = null;
         }
         this.dueDate = nextDueDate;
     }
@@ -381,6 +403,10 @@ public class Subscription {
 
     public LocalDate getDueDate() {
         return dueDate;
+    }
+
+    public LocalDate getDunningBillingPeriod() {
+        return dunningBillingPeriod;
     }
 
     public Instant getCreatedAt() {

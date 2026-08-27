@@ -213,6 +213,94 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void aSubscriptionWithAStillFailingCardRunsTheFullDayOneThreeSevenScheduleAndEndsCanceledWithFourPaymentAttemptsOnOneInvoice() {
+        // Required test: the full bounded retry loop, driven end to end through real
+        // runs of the job -- each run's outcome is what schedules the next, exactly as
+        // production does. Day 1/3/7 are computed by DunningSchedule from the Invoice's
+        // real creation instant (no clock seam on that path), so each step's due_date is
+        // force-moved back to today via the Subscription aggregate's own scheduleRetry
+        // (the same mechanism Dunning itself uses) to simulate that day having arrived,
+        // rather than the test waiting on the calendar.
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        LocalDate billingPeriod = LocalDate.of(2026, 2, 1);
+        Subscription subscription = seedDueSubscription(
+                proPlan, Instant.parse("2026-02-01T00:00:00Z"), billingPeriod, PaymentGatewayTestConfig.DECLINE_TOKEN);
+        double attemptsBefore = meterRegistry.get("billing_job_dunning_attempts_total").counter().count();
+        double exhaustionsBefore = meterRegistry.get("billing_job_dunning_exhaustions_total").counter().count();
+
+        billingJobRunner.run(); // initial charge fails -> suspended, day-1 retry scheduled
+        forceDueToday(subscription.getId());
+        billingJobRunner.run(); // day-1 retry fails -> retriesUsed=1, day-3 scheduled
+        forceDueToday(subscription.getId());
+        billingJobRunner.run(); // day-3 retry fails -> retriesUsed=2, day-7 scheduled
+        forceDueToday(subscription.getId());
+        billingJobRunner.run(); // day-7 retry fails -> retriesUsed=3, exhausted -> canceled
+
+        Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod);
+        assertThat(invoice).isPresent();
+        assertThat(invoice.get().getRetriesUsed()).isEqualTo(3);
+        List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
+        assertThat(attempts).hasSize(4);
+        assertThat(attempts).allSatisfy(attempt -> assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.FAILED));
+
+        Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
+        assertThat(reloaded.getState()).isEqualTo(SubscriptionState.CANCELED);
+        assertThat(reloaded.getDunningBillingPeriod()).isNull();
+
+        assertThat(meterRegistry.get("billing_job_dunning_attempts_total").counter().count())
+                .isGreaterThanOrEqualTo(attemptsBefore + 3.0);
+        assertThat(meterRegistry.get("billing_job_dunning_exhaustions_total").counter().count())
+                .isGreaterThanOrEqualTo(exhaustionsBefore + 1.0);
+
+        List<AuditLogEntry> entries = auditLogEntryRepository.findBySubscriptionId(subscription.getId());
+        assertThat(entries).anySatisfy(entry -> {
+            assertThat(entry.getOldState()).isEqualTo("SUSPENDED");
+            assertThat(entry.getNewState()).isEqualTo("CANCELED");
+        });
+    }
+
+    @Test
+    void aScheduledDunningRetryThatSucceedsRestoresActiveAttachesToTheSameInvoiceAndStopsFurtherRetries() {
+        Plan proPlan = planRepository.findByCode("pro").orElseThrow();
+        LocalDate billingPeriod = LocalDate.of(2026, 2, 5);
+        Subscription subscription = seedDueSubscription(
+                proPlan, Instant.parse("2026-02-05T00:00:00Z"), billingPeriod, PaymentGatewayTestConfig.DECLINE_TOKEN);
+        double recoveriesBefore = meterRegistry.get("billing_job_dunning_recoveries_total").counter().count();
+
+        billingJobRunner.run(); // initial charge fails -> suspended, day-1 retry scheduled
+        forceDueToday(subscription.getId());
+        // Simulates the Customer updating their card before the day-1 retry fires.
+        Customer customer = customerRepository.findById(subscription.getCustomer().getId()).orElseThrow();
+        customer.setPaymentMethodToken("tok_visa");
+        customerRepository.saveAndFlush(customer);
+
+        billingJobRunner.run(); // day-1 retry succeeds -> restored to active
+
+        Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod);
+        assertThat(invoice).isPresent();
+        List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
+        assertThat(attempts).hasSize(2);
+        assertThat(attempts.get(0).getStatus()).isEqualTo(PaymentAttemptStatus.FAILED);
+        assertThat(attempts.get(1).getStatus()).isEqualTo(PaymentAttemptStatus.SUCCEEDED);
+
+        Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
+        assertThat(reloaded.getState()).isEqualTo(SubscriptionState.ACTIVE);
+        assertThat(reloaded.getDunningBillingPeriod()).isNull();
+        // Stops further scheduled retries for this cycle: due_date lands on the ordinary
+        // next renewal derived from the original billing period, not on day 3/7.
+        assertThat(reloaded.getDueDate()).isEqualTo(new AnchorDate(billingPeriod.getDayOfMonth()).next(billingPeriod));
+
+        assertThat(meterRegistry.get("billing_job_dunning_recoveries_total").counter().count())
+                .isGreaterThanOrEqualTo(recoveriesBefore + 1.0);
+
+        List<AuditLogEntry> entries = auditLogEntryRepository.findBySubscriptionId(subscription.getId());
+        assertThat(entries).anySatisfy(entry -> {
+            assertThat(entry.getOldState()).isEqualTo("SUSPENDED");
+            assertThat(entry.getNewState()).isEqualTo("ACTIVE");
+        });
+    }
+
+    @Test
     void aTransientGatewayFailureDoesNotCreateAPaymentAttemptOrChangeSubscriptionState() {
         Plan proPlan = planRepository.findByCode("pro").orElseThrow();
         LocalDate billingPeriod = LocalDate.of(2026, 4, 12);
@@ -470,6 +558,19 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
                 UUID.randomUUID(), seedCustomer(paymentMethodToken), plan, Instant.now());
         subscription.advanceDueDate(trialEndDate);
         return subscriptionRepository.saveAndFlush(subscription);
+    }
+
+    /**
+     * Moves a suspended Subscription's {@code due_date} back to today via the same
+     * {@link Subscription#scheduleRetry} mechanism Dunning itself uses, simulating a
+     * scheduled retry's day having arrived without the test waiting on the real
+     * calendar (day 1/3/7 are computed from the Invoice's real creation instant, which
+     * has no clock seam).
+     */
+    private void forceDueToday(UUID subscriptionId) {
+        Subscription subscription = subscriptionRepository.findById(subscriptionId).orElseThrow();
+        subscription.scheduleRetry(LocalDate.now(ZoneOffset.UTC));
+        subscriptionRepository.saveAndFlush(subscription);
     }
 
     private Customer seedCustomer(String paymentMethodToken) {

@@ -8,8 +8,8 @@ import java.util.UUID;
 
 /**
  * This module's implementation of the dunning module's {@link SubscriptionSuspensionPort}
- * contract, backed by {@link SubscriptionService#suspend} and {@link
- * SubscriptionService#scheduleRetry}.
+ * contract, backed by {@link SubscriptionService#suspend}, {@link
+ * SubscriptionService#scheduleRetry}, and {@link SubscriptionService#cancelForDunningExhaustion}.
  */
 @Component
 public class SubscriptionSuspensionAdapter implements SubscriptionSuspensionPort {
@@ -21,12 +21,17 @@ public class SubscriptionSuspensionAdapter implements SubscriptionSuspensionPort
     }
 
     @Override
-    public void suspend(UUID subscriptionId, String correlationId) {
-        subscriptionService.suspend(subscriptionId, correlationId);
+    public void suspend(UUID subscriptionId, LocalDate billingPeriod, String correlationId) {
+        subscriptionService.suspend(subscriptionId, billingPeriod, correlationId);
     }
 
     @Override
     public void scheduleRetry(UUID subscriptionId, LocalDate retryDueDate) {
         subscriptionService.scheduleRetry(subscriptionId, retryDueDate);
+    }
+
+    @Override
+    public void cancel(UUID subscriptionId, String correlationId) {
+        subscriptionService.cancelForDunningExhaustion(subscriptionId, correlationId);
     }
 }

@@ -17,10 +17,13 @@ public interface SubscriptionSuspensionPort {
      * Suspends the identified Subscription.
      *
      * @param subscriptionId the Subscription to suspend
+     * @param billingPeriod  the Billing Cycle date whose charge just failed, so it can
+     *                       still be identified once the Subscription's due date is
+     *                       repurposed for Dunning retry scheduling
      * @param correlationId  a caller-supplied identifier for tracing this suspension
      *                       back to what triggered it
      */
-    void suspend(UUID subscriptionId, String correlationId);
+    void suspend(UUID subscriptionId, LocalDate billingPeriod, String correlationId);
 
     /**
      * Schedules the identified Subscription's next Dunning retry by moving its due
@@ -31,4 +34,14 @@ public interface SubscriptionSuspensionPort {
      * @param retryDueDate   the next Dunning retry date
      */
     void scheduleRetry(UUID subscriptionId, LocalDate retryDueDate);
+
+    /**
+     * Cancels the identified Subscription because its Dunning retries are exhausted
+     * (the 3rd scheduled retry's failure).
+     *
+     * @param subscriptionId the Subscription to cancel
+     * @param correlationId  a caller-supplied identifier for tracing this cancellation
+     *                       back to what triggered it
+     */
+    void cancel(UUID subscriptionId, String correlationId);
 }

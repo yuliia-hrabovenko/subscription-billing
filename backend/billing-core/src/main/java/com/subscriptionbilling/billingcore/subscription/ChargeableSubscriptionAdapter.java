@@ -22,6 +22,14 @@ import java.util.UUID;
  * Subscription#getBillingCycleAnchor()} already carries; for a {@code trialing}
  * Subscription converting today (no Billing Cycle opened yet — Invariant 5), it's
  * today's day-of-month, the Anchor Date about to be established by this same charge.
+ *
+ * <p>A {@code suspended} Subscription is a due Dunning retry, not a fresh renewal: its
+ * {@code due_date} has been repurposed to hold the next scheduled retry date (see
+ * {@link Subscription#scheduleRetry}), so the Billing Cycle actually being charged for
+ * is read from {@link Subscription#getDunningBillingPeriod()} instead — the field
+ * {@link Subscription#suspend} preserved it in — and the assembled {@link
+ * ChargeableSubscription#dunningRetry()} flag is set, telling the billing job which
+ * outcome handling applies.
  */
 @Component
 public class ChargeableSubscriptionAdapter implements ChargeableSubscriptionPort {
@@ -47,13 +55,16 @@ public class ChargeableSubscriptionAdapter implements ChargeableSubscriptionPort
     @Transactional(readOnly = true)
     public ChargeableSubscription loadForCharge(UUID subscriptionId) {
         Subscription subscription = subscriptionRepository.findById(subscriptionId).orElseThrow(() -> new IllegalStateException("Subscription " + subscriptionId + " does not exist"));
+        boolean dunningRetry = subscription.getState() == SubscriptionState.SUSPENDED;
+        LocalDate billingPeriod = dunningRetry ? subscription.getDunningBillingPeriod() : subscription.getDueDate();
+
         UUID planId = subscription.getPlan().getId();
         // Priced as of the billing period being charged, not as of "now": a Plan price
         // change never retroactively alters an already-due cycle, including one caught
         // up several days late by a missed run.
         PriceVersion effectivePrice = priceVersionRepository
                 .findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
-                        planId, subscription.getDueDate().atStartOfDay(ZoneOffset.UTC).toInstant())
+                        planId, billingPeriod.atStartOfDay(ZoneOffset.UTC).toInstant())
                 .orElseThrow(() -> new IllegalStateException("Plan " + planId + " has no PriceVersion in effect"));
         int anchorDayOfMonth = subscription.getBillingCycleAnchor() != null
                 ? subscription.getBillingCycleAnchor().atZone(ZoneOffset.UTC).getDayOfMonth()
@@ -64,7 +75,8 @@ public class ChargeableSubscriptionAdapter implements ChargeableSubscriptionPort
                 subscription.getCustomer().getPaymentMethodToken(),
                 effectivePrice.getAmount(),
                 effectivePrice.getId(),
-                subscription.getDueDate(),
-                anchorDayOfMonth);
+                billingPeriod,
+                anchorDayOfMonth,
+                dunningRetry);
     }
 }
