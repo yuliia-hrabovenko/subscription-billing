@@ -200,7 +200,7 @@ public class BillingJobRunner {
                                 ChargeResult.Declined declined, Instant attemptedAt) {
         UUID invoiceId = chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), attemptedAt);
-        dunningHandoff.onChargeFailed(subscriptionId, invoiceId);
+        dunningHandoff.onChargeFailed(subscriptionId, invoiceId, attemptedAt);
         declinedCharges.increment();
         log.info("Charge declined for subscription {}: {}", subscriptionId, declined.reason());
     }

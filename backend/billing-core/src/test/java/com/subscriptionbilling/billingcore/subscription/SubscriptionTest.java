@@ -277,6 +277,17 @@ class SubscriptionTest {
     }
 
     @Test
+    void scheduleRetryMovesTheDueDateToTheGivenRetryDateWithoutChangingState() {
+        Subscription subscription = new Subscription(
+                UUID.randomUUID(), customer, plan, SubscriptionState.SUSPENDED, Instant.now(), LocalDate.of(2026, 1, 31));
+
+        subscription.scheduleRetry(LocalDate.of(2026, 2, 1));
+
+        assertThat(subscription.getDueDate()).isEqualTo(LocalDate.of(2026, 2, 1));
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.SUSPENDED);
+    }
+
+    @Test
     void applySuccessfulChargeFromTrialingActivatesOpensTheBillingCycleAndClearsTheTrial() {
         Subscription subscription = Subscription.startTrial(UUID.randomUUID(), customer, plan, Instant.now());
         Instant chargedAt = Instant.parse("2026-08-24T03:00:00Z");

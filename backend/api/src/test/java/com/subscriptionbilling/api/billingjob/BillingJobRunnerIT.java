@@ -190,7 +190,7 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void aDeclinedChargeRecordsAFailedPaymentAttemptLeavesDueDateUnchangedAndSuspendsTheSubscription() {
+    void aDeclinedChargeRecordsAFailedPaymentAttemptSchedulesTheDayOneDunningRetryAndSuspendsTheSubscription() {
         Plan proPlan = planRepository.findByCode("pro").orElseThrow();
         LocalDate billingPeriod = LocalDate.of(2026, 4, 10);
         Subscription subscription = seedDueSubscription(
@@ -205,7 +205,10 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
                 assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.FAILED));
 
         Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
-        assertThat(reloaded.getDueDate()).isEqualTo(billingPeriod);
+        // Moved off billingPeriod to Dunning's day-1 retry offset, not left unchanged --
+        // this is what makes the billing job's existing due_date <= today query pick this
+        // Subscription back up for the retry with no new query needed.
+        assertThat(reloaded.getDueDate()).isEqualTo(LocalDate.now(ZoneOffset.UTC).plusDays(1));
         assertThat(reloaded.getState()).isEqualTo(SubscriptionState.SUSPENDED);
     }
 
@@ -240,10 +243,13 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
 
     @Test
     void runningTheJobTwiceInARowForTheSameSubscriptionChargesTheGatewayAtMostOnce() {
-        // Declined, so due_date stays put and the Subscription is still selected as due
-        // on the second run -- exercising the real pre-check (not a pre-seeded row) is
-        // what makes this a genuine two-real-runs proof of required test (a), rather than
-        // simulating "already recorded" by hand.
+        // Declined: the first run suspends and moves due_date to Dunning's day-1 retry
+        // offset (tomorrow), so the second run's real due-selection query naturally
+        // excludes it -- a genuine two-real-runs proof of required test (a), rather than
+        // simulating "already recorded" by hand, though it now exercises the due-date
+        // selection guard rather than the invoiceAlreadyRecorded pre-check (which
+        // aSubscriptionAlreadyInvoicedForItsDueDateIsSkippedWithoutChargingTheGatewayAgain
+        // below covers instead).
         Plan proPlan = planRepository.findByCode("pro").orElseThrow();
         LocalDate billingPeriod = LocalDate.of(2026, 6, 1);
         Subscription subscription = seedDueSubscription(proPlan, Instant.parse("2026-06-01T00:00:00Z"),
@@ -336,9 +342,9 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void aTrialConversionChargeThatIsDeclinedSuspendsTheSubscriptionThroughTheSameDunningHandoffAsARenewalDecline() {
+    void aTrialConversionChargeThatIsDeclinedSuspendsTheSubscriptionAndSchedulesTheDayOneDunningRetryThroughTheSameDunningHandoffAsARenewalDecline() {
         Plan proPlan = planRepository.findByCode("pro").orElseThrow();
-        LocalDate trialEndDate = LocalDate.now();
+        LocalDate trialEndDate = LocalDate.now(ZoneOffset.UTC);
         Subscription subscription = seedDueTrialSubscription(proPlan, trialEndDate, PaymentGatewayTestConfig.DECLINE_TOKEN);
 
         billingJobRunner.run();
@@ -346,7 +352,10 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
         Subscription reloaded = subscriptionRepository.findById(subscription.getId()).orElseThrow();
         assertThat(reloaded.getState()).isEqualTo(SubscriptionState.SUSPENDED);
         assertThat(reloaded.getBillingCycleAnchor()).isNull();
-        assertThat(reloaded.getDueDate()).isEqualTo(trialEndDate);
+        // Dunning's day-1 retry offset, not the pre-failure trial end date: proves the
+        // real DunningHandoff (not the immediate-suspend-only placeholder it replaced)
+        // is wired in.
+        assertThat(reloaded.getDueDate()).isEqualTo(trialEndDate.plusDays(1));
 
         Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), trialEndDate);
         assertThat(invoice).isPresent();
