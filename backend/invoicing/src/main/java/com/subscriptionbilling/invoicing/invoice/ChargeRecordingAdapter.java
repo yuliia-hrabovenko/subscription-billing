@@ -2,6 +2,7 @@ package com.subscriptionbilling.invoicing.invoice;
 
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
+import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -63,6 +64,16 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
         log.info("Charge declined for subscription {} billing period {}: invoice {}",
                 subscriptionId, billingPeriod, invoice.getId());
         return invoice.getId();
+    }
+
+    @Override
+    @Transactional
+    public DunningRetryState recordRetryAttempt(UUID invoiceId) {
+        Invoice invoice = invoiceRepository.findById(invoiceId)
+                .orElseThrow(() -> new IllegalStateException("Invoice " + invoiceId + " does not exist"));
+        invoice.recordRetryAttempt();
+        invoiceRepository.saveAndFlush(invoice);
+        return new DunningRetryState(invoice.getCreatedAt(), invoice.getRetriesUsed(), invoice.retriesExhausted());
     }
 
     private Invoice findOrCreateInvoice(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId) {

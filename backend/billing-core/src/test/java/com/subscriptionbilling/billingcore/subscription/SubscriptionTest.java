@@ -66,6 +66,17 @@ class SubscriptionTest {
     }
 
     @Test
+    void cancelFromSuspendedClearsTheDunningBillingPeriod() {
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
+        subscription.suspend(LocalDate.of(2026, 8, 24));
+
+        subscription.cancel();
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.CANCELED);
+        assertThat(subscription.getDunningBillingPeriod()).isNull();
+    }
+
+    @Test
     void cancelFromActiveWithABillingCycleDefersToPendingCancellation() {
         Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
 
@@ -234,12 +245,13 @@ class SubscriptionTest {
     }
 
     @Test
-    void suspendFromTrialingTransitionsImmediatelyToSuspended() {
+    void suspendFromTrialingTransitionsImmediatelyToSuspendedAndRemembersTheBillingPeriod() {
         Subscription subscription = Subscription.startTrial(UUID.randomUUID(), customer, plan, Instant.now());
 
-        subscription.suspend();
+        subscription.suspend(LocalDate.of(2026, 8, 24));
 
         assertThat(subscription.getState()).isEqualTo(SubscriptionState.SUSPENDED);
+        assertThat(subscription.getDunningBillingPeriod()).isEqualTo(LocalDate.of(2026, 8, 24));
     }
 
     @Test
@@ -247,7 +259,7 @@ class SubscriptionTest {
         Instant billingCycleAnchor = Instant.now();
         Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, billingCycleAnchor);
 
-        subscription.suspend();
+        subscription.suspend(LocalDate.of(2026, 8, 24));
 
         assertThat(subscription.getState()).isEqualTo(SubscriptionState.SUSPENDED);
         // Unlike cancel(), suspend() must not clear the anchor: a later successful
@@ -260,7 +272,8 @@ class SubscriptionTest {
     void suspendFromAnyOtherStateIsRejected(SubscriptionState originatingState) {
         Subscription subscription = subscriptionIn(originatingState);
 
-        assertThatThrownBy(subscription::suspend).isInstanceOf(SubscriptionNotEligibleForSuspensionException.class);
+        assertThatThrownBy(() -> subscription.suspend(LocalDate.of(2026, 8, 24)))
+                .isInstanceOf(SubscriptionNotEligibleForSuspensionException.class);
 
         // Rejected transitions never mutate state — still exactly where it started.
         assertThat(subscription.getState()).isEqualTo(originatingState);
@@ -312,5 +325,21 @@ class SubscriptionTest {
         // conversion, which has no prior anchor, establishes one from chargedAt.
         assertThat(subscription.getBillingCycleAnchor()).isEqualTo(originalAnchor);
         assertThat(subscription.getDueDate()).isEqualTo(LocalDate.of(2026, 3, 31));
+    }
+
+    @Test
+    void applySuccessfulChargeFromSuspendedRecoversToActiveClearsTheDunningBillingPeriodAndKeepsTheAnchor() {
+        Instant originalAnchor = Instant.parse("2026-01-24T00:00:00Z");
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, originalAnchor);
+        subscription.suspend(LocalDate.of(2026, 8, 24));
+
+        subscription.applySuccessfulCharge(Instant.parse("2026-08-27T03:00:00Z"), LocalDate.of(2026, 9, 24));
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.ACTIVE);
+        // A Dunning recovery never re-anchors the Billing Cycle either -- same as an
+        // ordinary renewal, only a Trial conversion establishes a fresh anchor.
+        assertThat(subscription.getBillingCycleAnchor()).isEqualTo(originalAnchor);
+        assertThat(subscription.getDunningBillingPeriod()).isNull();
+        assertThat(subscription.getDueDate()).isEqualTo(LocalDate.of(2026, 9, 24));
     }
 }

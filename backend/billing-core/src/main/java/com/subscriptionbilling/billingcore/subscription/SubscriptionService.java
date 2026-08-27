@@ -244,23 +244,49 @@ public class SubscriptionService {
     }
 
     /**
-     * Suspends a Subscription immediately, per {@link Subscription#suspend()}'s
-     * business rule ("first failed charge suspends, no grace period"). Unlike {@link
-     * #cancel}/{@link #undoCancel}, this is system-triggered — there is no
-     * authenticated Customer to check ownership against, and no Idempotency-Key.
+     * Suspends a Subscription immediately, per {@link Subscription#suspend}'s business
+     * rule ("first failed charge suspends, no grace period"). Unlike {@link #cancel}/
+     * {@link #undoCancel}, this is system-triggered — there is no authenticated
+     * Customer to check ownership against, and no Idempotency-Key.
      *
      * @param subscriptionId the Subscription to suspend
+     * @param billingPeriod  the Billing Cycle date whose charge just failed
      * @param correlationId  rides along on the written {@link
      *                       com.subscriptionbilling.audit.AuditLogEntry}
      * @throws SubscriptionNotEligibleForSuspensionException if not currently {@code
      *         trialing} or {@code active}
      */
     @Transactional
-    public void suspend(UUID subscriptionId, String correlationId) {
+    public void suspend(UUID subscriptionId, LocalDate billingPeriod, String correlationId) {
         Subscription subscription = subscriptionRepository.findById(subscriptionId)
                 .orElseThrow(() -> new IllegalStateException("Subscription " + subscriptionId + " does not exist"));
         SubscriptionState oldState = subscription.getState();
-        subscription.suspend();
+        subscription.suspend(billingPeriod);
+        subscriptionRepository.saveAndFlush(subscription);
+        auditLogEntryRepository.append(new AuditLogEntry(
+                UUID.randomUUID(), subscription.getId(), ActorType.SYSTEM, oldState.name(),
+                subscription.getState().name(), correlationId));
+    }
+
+    /**
+     * Cancels a {@code suspended} Subscription whose Dunning retries are exhausted
+     * (the 3rd scheduled retry's failure), per {@link Subscription#cancel()}'s {@code
+     * suspended -> canceled} edge. System-triggered, like {@link #suspend}: no
+     * authenticated Customer, no Idempotency-Key.
+     *
+     * @param subscriptionId the Subscription to cancel
+     * @param correlationId  rides along on the written {@link
+     *                       com.subscriptionbilling.audit.AuditLogEntry}
+     * @throws SubscriptionAlreadyPendingCancellationException if a cancellation is
+     *         already pending
+     * @throws SubscriptionAlreadyCanceledException            if already {@code canceled}
+     */
+    @Transactional
+    public void cancelForDunningExhaustion(UUID subscriptionId, String correlationId) {
+        Subscription subscription = subscriptionRepository.findById(subscriptionId)
+                .orElseThrow(() -> new IllegalStateException("Subscription " + subscriptionId + " does not exist"));
+        SubscriptionState oldState = subscription.getState();
+        subscription.cancel();
         subscriptionRepository.saveAndFlush(subscription);
         auditLogEntryRepository.append(new AuditLogEntry(
                 UUID.randomUUID(), subscription.getId(), ActorType.SYSTEM, oldState.name(),

@@ -677,9 +677,10 @@ class SubscriptionServiceTest {
                 subscriptionId, new Customer(UUID.randomUUID(), "trialist@example.com"), proPlan, FIXED_NOW);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
 
-        service().suspend(subscriptionId, "corr-suspend-1");
+        service().suspend(subscriptionId, LocalDate.of(2026, 8, 22), "corr-suspend-1");
 
         assertThat(subscription.getState()).isEqualTo(SubscriptionState.SUSPENDED);
+        assertThat(subscription.getDunningBillingPeriod()).isEqualTo(LocalDate.of(2026, 8, 22));
         verify(subscriptionRepository).saveAndFlush(subscription);
 
         ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
@@ -697,7 +698,7 @@ class SubscriptionServiceTest {
                 subscriptionId, new Customer(UUID.randomUUID(), "active@example.com"), proPlan, FIXED_NOW);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
 
-        service().suspend(subscriptionId, "corr-suspend-2");
+        service().suspend(subscriptionId, LocalDate.of(2026, 8, 22), "corr-suspend-2");
 
         assertThat(subscription.getState()).isEqualTo(SubscriptionState.SUSPENDED);
 
@@ -714,7 +715,7 @@ class SubscriptionServiceTest {
                 subscriptionId, new Customer(UUID.randomUUID(), "canceled@example.com"), proPlan, SubscriptionState.CANCELED);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
 
-        assertThatThrownBy(() -> service().suspend(subscriptionId, "corr-suspend-3"))
+        assertThatThrownBy(() -> service().suspend(subscriptionId, LocalDate.of(2026, 8, 22), "corr-suspend-3"))
                 .isInstanceOf(SubscriptionNotEligibleForSuspensionException.class);
 
         verify(subscriptionRepository, never()).saveAndFlush(any());
@@ -726,7 +727,53 @@ class SubscriptionServiceTest {
         UUID subscriptionId = UUID.randomUUID();
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service().suspend(subscriptionId, "corr-suspend-4"))
+        assertThatThrownBy(() -> service().suspend(subscriptionId, LocalDate.of(2026, 8, 22), "corr-suspend-4"))
+                .isInstanceOf(IllegalStateException.class);
+
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void cancelForDunningExhaustionFromSuspendedTransitionsImmediatelyToCanceledAndWritesASystemAuditLogEntry() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(UUID.randomUUID(), "exhausted@example.com"), proPlan, FIXED_NOW);
+        subscription.suspend(LocalDate.of(2026, 8, 1));
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        service().cancelForDunningExhaustion(subscriptionId, "corr-exhaust-1");
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.CANCELED);
+        verify(subscriptionRepository).saveAndFlush(subscription);
+
+        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.SYSTEM);
+        assertThat(auditEntry.getValue().getOldState()).isEqualTo("SUSPENDED");
+        assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
+        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-exhaust-1");
+    }
+
+    @Test
+    void cancelForDunningExhaustionOnAnAlreadyCanceledSubscriptionIsRejectedAndWritesNoAuditLogEntry() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(UUID.randomUUID(), "already-canceled@example.com"), proPlan, SubscriptionState.CANCELED);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().cancelForDunningExhaustion(subscriptionId, "corr-exhaust-2"))
+                .isInstanceOf(SubscriptionAlreadyCanceledException.class);
+
+        verify(subscriptionRepository, never()).saveAndFlush(any());
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void cancelForDunningExhaustionOfANonexistentSubscriptionFailsFastInsteadOfSilentlyNoOping() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().cancelForDunningExhaustion(subscriptionId, "corr-exhaust-3"))
                 .isInstanceOf(IllegalStateException.class);
 
         verify(auditLogEntryRepository, never()).append(any());

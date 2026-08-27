@@ -12,9 +12,10 @@ import static org.mockito.Mockito.verify;
 
 /**
  * Unit coverage of {@link SubscriptionSuspensionAdapter}: it forwards to {@link
- * SubscriptionService#suspend} and {@link SubscriptionService#scheduleRetry}. {@link
- * SubscriptionServiceTest} covers what those actually do (the trialing/active edges,
- * the due-date move, and the written {@code AuditLogEntry}).
+ * SubscriptionService#suspend}, {@link SubscriptionService#scheduleRetry}, and {@link
+ * SubscriptionService#cancelForDunningExhaustion}. {@link SubscriptionServiceTest}
+ * covers what those actually do (the trialing/active edges, the due-date move, and the
+ * written {@code AuditLogEntry}).
  */
 @ExtendWith(MockitoExtension.class)
 class SubscriptionSuspensionAdapterTest {
@@ -25,10 +26,11 @@ class SubscriptionSuspensionAdapterTest {
     @Test
     void suspendDelegatesToSubscriptionService() {
         UUID subscriptionId = UUID.randomUUID();
+        LocalDate billingPeriod = LocalDate.of(2026, 8, 24);
 
-        new SubscriptionSuspensionAdapter(subscriptionService).suspend(subscriptionId, "corr-1");
+        new SubscriptionSuspensionAdapter(subscriptionService).suspend(subscriptionId, billingPeriod, "corr-1");
 
-        verify(subscriptionService).suspend(subscriptionId, "corr-1");
+        verify(subscriptionService).suspend(subscriptionId, billingPeriod, "corr-1");
     }
 
     @Test
@@ -39,5 +41,14 @@ class SubscriptionSuspensionAdapterTest {
         new SubscriptionSuspensionAdapter(subscriptionService).scheduleRetry(subscriptionId, retryDueDate);
 
         verify(subscriptionService).scheduleRetry(subscriptionId, retryDueDate);
+    }
+
+    @Test
+    void cancelDelegatesToSubscriptionServiceCancelForDunningExhaustion() {
+        UUID subscriptionId = UUID.randomUUID();
+
+        new SubscriptionSuspensionAdapter(subscriptionService).cancel(subscriptionId, "corr-2");
+
+        verify(subscriptionService).cancelForDunningExhaustion(subscriptionId, "corr-2");
     }
 }
