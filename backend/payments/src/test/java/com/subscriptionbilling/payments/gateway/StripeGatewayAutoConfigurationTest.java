@@ -14,8 +14,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Proves {@link StripeGatewayAutoConfiguration}'s bean-registration contract: the real
- * adapter is the {@link PaymentGatewayClient} bean when nothing else provides one, and
- * it backs off — leaving an already-defined fake in place — otherwise.
+ * adapter, wrapped in its resilience decorator, is the {@link PaymentGatewayClient} bean
+ * when nothing else provides one, and it backs off — leaving an already-defined fake in
+ * place — otherwise.
  */
 class StripeGatewayAutoConfigurationTest {
 
@@ -23,15 +24,15 @@ class StripeGatewayAutoConfigurationTest {
             .withConfiguration(AutoConfigurations.of(StripeGatewayAutoConfiguration.class));
 
     @Test
-    void registersTheStripeAdapterWhenNoOtherPaymentGatewayClientBeanExists() {
+    void registersTheResilientStripeAdapterWhenNoOtherPaymentGatewayClientBeanExists() {
         contextRunner.run(context ->
-                assertThat(context.getBean(PaymentGatewayClient.class)).isInstanceOf(StripePaymentGatewayClient.class));
+                assertThat(context.getBean(PaymentGatewayClient.class)).isInstanceOf(ResilientPaymentGatewayClient.class));
     }
 
     @Test
     void backsOffWhenAnotherPaymentGatewayClientBeanIsAlreadyDefined() {
         contextRunner.withUserConfiguration(FakeGatewayConfig.class).run(context ->
-                assertThat(context.getBean(PaymentGatewayClient.class)).isNotInstanceOf(StripePaymentGatewayClient.class));
+                assertThat(context.getBean(PaymentGatewayClient.class)).isNotInstanceOf(ResilientPaymentGatewayClient.class));
     }
 
     @Configuration
