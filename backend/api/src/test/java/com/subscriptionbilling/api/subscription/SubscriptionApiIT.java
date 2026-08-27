@@ -1,9 +1,9 @@
 package com.subscriptionbilling.api.subscription;
 
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
+import com.subscriptionbilling.api.support.PaymentGatewayTestConfig;
 import com.subscriptionbilling.audit.AuditLogEntry;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
-import com.subscriptionbilling.billingcore.auth.CustomerTokenIssuer;
 import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.customer.CustomerRepository;
 import com.subscriptionbilling.billingcore.plan.Plan;
@@ -13,6 +13,12 @@ import com.subscriptionbilling.billingcore.plan.PriceVersionRepository;
 import com.subscriptionbilling.billingcore.subscription.Subscription;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionRepository;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionState;
+import com.subscriptionbilling.billingjob.BillingJobRunner;
+import com.subscriptionbilling.invoicing.invoice.Invoice;
+import com.subscriptionbilling.invoicing.invoice.InvoiceRepository;
+import com.subscriptionbilling.invoicing.invoice.PaymentAttempt;
+import com.subscriptionbilling.invoicing.invoice.PaymentAttemptRepository;
+import com.subscriptionbilling.invoicing.invoice.PaymentAttemptStatus;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -24,6 +30,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 
@@ -37,6 +45,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * AuditLogEntry exists per signup. Cancel and undo-cancel exercise every originating
  * state's edge (immediate vs. deferred termination, the invalid-transition rejections,
  * ownership enforcement, and Idempotency-Key deduplication) through the HTTP layer.
+ * Self-service retry-payment is exercised against a Subscription suspended through the
+ * real Dunning flow ({@link BillingJobRunner}), not a hand-seeded fixture, since this is
+ * the one module with billing-core's, invoicing's, dunning's, and payments' port
+ * implementations all wired together at once (see {@code BillingJobRunnerIT}'s Javadoc).
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -61,10 +73,16 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
     private AuditLogEntryRepository auditLogEntryRepository;
 
     @Autowired
-    private CustomerTokenIssuer tokenIssuer;
+    private JsonMapper jsonMapper;
 
     @Autowired
-    private JsonMapper jsonMapper;
+    private BillingJobRunner billingJobRunner;
+
+    @Autowired
+    private InvoiceRepository invoiceRepository;
+
+    @Autowired
+    private PaymentAttemptRepository paymentAttemptRepository;
 
     @Test
     void freeSignupWithNoTokenCreatesAnActiveSubscriptionWithNoBillingCycleAndIssuesAToken() {
@@ -307,8 +325,11 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void cancelFromSuspendedTestSeededFixtureTransitionsImmediatelyToCanceled() {
-        SignupResponse owner = seedSuspendedSubscription();
+    void cancelFromSuspendedViaTheRealDunningFlowTransitionsImmediatelyToCanceled() {
+        // Regression check: suspended is now reachable through the real Dunning flow
+        // (BillingJobRunner -> DunningHandoff -> Subscription#suspend), not just a
+        // hand-seeded fixture -- the direct-cancel edge from suspended must still hold.
+        SignupResponse owner = suspendViaRealDunningFlow("cancel-suspended-" + UUID.randomUUID() + "@example.com");
 
         mvc.post().uri("/api/v1/subscriptions/{id}/cancel", owner.subscriptionId())
                 .header("Authorization", "Bearer " + owner.accessToken())
@@ -595,6 +616,119 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
                 .extractingPath("$.error.code").asString().isEqualTo("FORBIDDEN");
     }
 
+    @Test
+    void retryPaymentFromSuspendedSucceedsRestoringActiveVerifiedByFollowUpGet() {
+        SignupResponse owner = suspendViaRealDunningFlow("retry-success-" + UUID.randomUUID() + "@example.com");
+        // Simulates the Customer updating their card before retrying themselves.
+        updatePaymentMethodToken(owner.subscriptionId(), "gw_tok_abc123");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/retry-payment", owner.subscriptionId())
+                .header("Authorization", "Bearer " + owner.accessToken())
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("ACTIVE");
+
+        mvc.get().uri("/api/v1/subscriptions/{id}", owner.subscriptionId())
+                .header("Authorization", "Bearer " + owner.accessToken())
+                .assertThat()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void aSelfServiceRetryThatFailsBetweenTwoScheduledRetriesStillEndsAtExactlyFourTotalAttempts() {
+        // Required test: a self-service retry that itself fails consumes one of the same
+        // bounded slots the day 1/3/7 schedule draws from -- it must not add an attempt
+        // beyond the 4-attempt bound (initial + 3 retries, self-service or scheduled).
+        SignupResponse owner = suspendViaRealDunningFlow("retry-bound-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/retry-payment", owner.subscriptionId())
+                .header("Authorization", "Bearer " + owner.accessToken())
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("SUSPENDED");
+
+        forceDueToday(owner.subscriptionId());
+        billingJobRunner.run(); // day-3 scheduled retry fails -> retriesUsed=2, day-7 scheduled
+        forceDueToday(owner.subscriptionId());
+        billingJobRunner.run(); // day-7 scheduled retry fails -> retriesUsed=3, exhausted -> canceled
+
+        Invoice invoice = invoiceRepository
+                .findBySubscriptionIdAndBillingPeriod(owner.subscriptionId(), LocalDate.now(ZoneOffset.UTC))
+                .orElseThrow();
+        assertThat(invoice.getRetriesUsed()).isEqualTo(3);
+        List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.getId());
+        assertThat(attempts).hasSize(4);
+        assertThat(attempts).allSatisfy(attempt -> assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.FAILED));
+
+        Subscription reloaded = subscriptionRepository.findById(owner.subscriptionId()).orElseThrow();
+        assertThat(reloaded.getState()).isEqualTo(SubscriptionState.CANCELED);
+    }
+
+    @Test
+    void aRepeatedRetryPaymentRequestWithTheSameIdempotencyKeyDoesNotTriggerASecondPaymentAttempt() {
+        SignupResponse owner = suspendViaRealDunningFlow("retry-idem-" + UUID.randomUUID() + "@example.com");
+        String idempotencyKey = "retry-idem-key-" + UUID.randomUUID();
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/retry-payment", owner.subscriptionId())
+                .header("Authorization", "Bearer " + owner.accessToken())
+                .header("Idempotency-Key", idempotencyKey)
+                .assertThat().hasStatusOk();
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/retry-payment", owner.subscriptionId())
+                .header("Authorization", "Bearer " + owner.accessToken())
+                .header("Idempotency-Key", idempotencyKey)
+                .assertThat()
+                .hasStatusOk()
+                .bodyJson()
+                .extractingPath("$.state").asString().isEqualTo("SUSPENDED");
+
+        Invoice invoice = invoiceRepository
+                .findBySubscriptionIdAndBillingPeriod(owner.subscriptionId(), LocalDate.now(ZoneOffset.UTC))
+                .orElseThrow();
+        List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.getId());
+        // One from the initial suspending failure, one (deduplicated) from the retry.
+        assertThat(attempts).hasSize(2);
+    }
+
+    @Test
+    void retryPaymentOnANonSuspendedSubscriptionIsRejectedWith403AndAStructuredError() {
+        SignupResponse signup = immediatePaidSignUp("retry-not-suspended-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/retry-payment", signup.subscriptionId())
+                .header("Authorization", "Bearer " + signup.accessToken())
+                .assertThat()
+                .hasStatus(403)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("SUBSCRIPTION_NOT_SUSPENDED");
+    }
+
+    @Test
+    void retryPaymentForAWrongOwnerIsRejectedWith403() {
+        SignupResponse owner = suspendViaRealDunningFlow("retry-victim-" + UUID.randomUUID() + "@example.com");
+        SignupResponse otherCustomer = signUp("retry-attacker-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/retry-payment", owner.subscriptionId())
+                .header("Authorization", "Bearer " + otherCustomer.accessToken())
+                .assertThat()
+                .hasStatus(403)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("FORBIDDEN");
+    }
+
+    @Test
+    void retryPaymentWithNoTokenIsRejectedWith401AndAStructuredError() {
+        SignupResponse owner = suspendViaRealDunningFlow("retry-noauth-" + UUID.randomUUID() + "@example.com");
+
+        mvc.post().uri("/api/v1/subscriptions/{id}/retry-payment", owner.subscriptionId())
+                .assertThat()
+                .hasStatus(401)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("UNAUTHORIZED");
+    }
+
     private SignupResponse signUp(String email) {
         MvcTestResult result = mvc.post().uri("/api/v1/subscriptions")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -612,29 +746,52 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
     }
 
     private SignupResponse immediatePaidSignUp(String email) {
+        return immediatePaidSignUp(email, "gw_tok_abc123");
+    }
+
+    private SignupResponse immediatePaidSignUp(String email, String paymentMethodToken) {
         MvcTestResult result = mvc.post().uri("/api/v1/subscriptions")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(immediatePaidSignupBody(proPlanId(), email))
+                .content(immediatePaidSignupBody(proPlanId(), email, paymentMethodToken))
                 .exchange();
         return readBody(result, SignupResponse.class);
     }
 
     /**
-     * Nothing in this spec's HTTP scope produces {@code suspended} yet (Dunning owns
-     * that) — seeded directly via the repository, per the ticket's own guidance for
-     * exercising this transition. Uses a fresh Customer with no other Subscription:
-     * Invariant 1's partial unique index would reject a second non-canceled row for a
-     * Customer that already has one from a prior signup.
+     * Drives a Subscription to {@code suspended} through the real Dunning flow —
+     * {@link BillingJobRunner} charging a declined card, {@code DunningHandoff}
+     * suspending it — rather than seeding the state directly. Signup has no HTTP path
+     * yet for scheduling a first due date (see {@code BillingJobRunnerIT}'s fixtures,
+     * which do the same), so {@code due_date} is set directly before the real job run
+     * that performs the actual suspension.
      */
-    private SignupResponse seedSuspendedSubscription() {
-        Customer customer = customerRepository.saveAndFlush(
-                new Customer(UUID.randomUUID(), "suspended-seed-" + UUID.randomUUID() + "@example.com"));
-        Plan proPlan = planRepository.findById(proPlanId()).orElseThrow();
+    private SignupResponse suspendViaRealDunningFlow(String email) {
+        SignupResponse signup = immediatePaidSignUp(email, PaymentGatewayTestConfig.DECLINE_TOKEN);
+        Subscription subscription = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow();
+        subscription.advanceDueDate(LocalDate.now(ZoneOffset.UTC));
+        subscriptionRepository.saveAndFlush(subscription);
 
-        Subscription suspended = new Subscription(UUID.randomUUID(), customer, proPlan, SubscriptionState.SUSPENDED);
-        subscriptionRepository.saveAndFlush(suspended);
-        String accessToken = tokenIssuer.issueFor(customer.getId());
-        return new SignupResponse(suspended.getId(), "SUSPENDED", proPlanId(), accessToken, null, null);
+        billingJobRunner.run();
+        return signup;
+    }
+
+    /**
+     * Moves a suspended Subscription's next scheduled Dunning retry date back to today,
+     * via the same mechanism Dunning itself uses, so its day having arrived can be
+     * simulated without waiting on the calendar (mirrors {@code BillingJobRunnerIT}'s
+     * helper of the same purpose).
+     */
+    private void forceDueToday(UUID subscriptionId) {
+        Subscription subscription = subscriptionRepository.findById(subscriptionId).orElseThrow();
+        subscription.scheduleRetry(LocalDate.now(ZoneOffset.UTC));
+        subscriptionRepository.saveAndFlush(subscription);
+    }
+
+    private void updatePaymentMethodToken(UUID subscriptionId, String paymentMethodToken) {
+        Subscription subscription = subscriptionRepository.findById(subscriptionId).orElseThrow();
+        Customer customer = customerRepository.findById(subscription.getCustomer().getId()).orElseThrow();
+        customer.setPaymentMethodToken(paymentMethodToken);
+        customerRepository.saveAndFlush(customer);
     }
 
     private <T> T readBody(MvcTestResult result, Class<T> type) {
@@ -685,8 +842,12 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
     }
 
     private String immediatePaidSignupBody(UUID planId, String email) {
+        return immediatePaidSignupBody(planId, email, "gw_tok_abc123");
+    }
+
+    private String immediatePaidSignupBody(UUID planId, String email, String paymentMethodToken) {
         return """
-                {"planId":"%s","email":"%s","useTrial":false,"paymentMethodToken":"gw_tok_abc123"}
-                """.formatted(planId, email);
+                {"planId":"%s","email":"%s","useTrial":false,"paymentMethodToken":"%s"}
+                """.formatted(planId, email, paymentMethodToken);
     }
 }

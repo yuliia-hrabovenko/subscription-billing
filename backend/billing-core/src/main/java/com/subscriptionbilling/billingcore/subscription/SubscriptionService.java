@@ -12,6 +12,10 @@ import com.subscriptionbilling.billingcore.plan.PlanCatalogService;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
 import com.subscriptionbilling.billingcore.plan.PlanSummary;
 import com.subscriptionbilling.billingcore.plan.PlanUnavailableForSignupException;
+import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
+import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
+import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
+import com.subscriptionbilling.billingjob.dunning.DunningRetryChargeResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,6 +53,9 @@ public class SubscriptionService {
     /** {@link IdempotencyService} operation name for {@link #schedulePlanChange}. */
     static final String PLAN_CHANGE_OPERATION = "plan-change";
 
+    /** {@link IdempotencyService} operation name for {@link #retryPayment}. */
+    static final String RETRY_PAYMENT_OPERATION = "retry-payment";
+
     private final CustomerRepository customerRepository;
     private final PlanRepository planRepository;
     private final SubscriptionRepository subscriptionRepository;
@@ -56,21 +63,25 @@ public class SubscriptionService {
     private final AuditLogEntryRepository auditLogEntryRepository;
     private final CustomerTokenIssuer tokenIssuer;
     private final IdempotencyService idempotencyService;
+    private final ChargeableSubscriptionPort chargeableSubscriptionPort;
+    private final DunningRetryCharge dunningRetryCharge;
     private final Clock clock;
 
     @Autowired
     public SubscriptionService(CustomerRepository customerRepository, PlanRepository planRepository,
                                 SubscriptionRepository subscriptionRepository, PlanCatalogService planCatalogService,
                                 AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
-                                IdempotencyService idempotencyService) {
+                                IdempotencyService idempotencyService, ChargeableSubscriptionPort chargeableSubscriptionPort,
+                                DunningRetryCharge dunningRetryCharge) {
         this(customerRepository, planRepository, subscriptionRepository, planCatalogService, auditLogEntryRepository,
-                tokenIssuer, idempotencyService, Clock.systemUTC());
+                tokenIssuer, idempotencyService, chargeableSubscriptionPort, dunningRetryCharge, Clock.systemUTC());
     }
 
     SubscriptionService(CustomerRepository customerRepository, PlanRepository planRepository,
                          SubscriptionRepository subscriptionRepository, PlanCatalogService planCatalogService,
                          AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
-                         IdempotencyService idempotencyService, Clock clock) {
+                         IdempotencyService idempotencyService, ChargeableSubscriptionPort chargeableSubscriptionPort,
+                         DunningRetryCharge dunningRetryCharge, Clock clock) {
         this.customerRepository = customerRepository;
         this.planRepository = planRepository;
         this.subscriptionRepository = subscriptionRepository;
@@ -78,6 +89,8 @@ public class SubscriptionService {
         this.auditLogEntryRepository = auditLogEntryRepository;
         this.tokenIssuer = tokenIssuer;
         this.idempotencyService = idempotencyService;
+        this.chargeableSubscriptionPort = chargeableSubscriptionPort;
+        this.dunningRetryCharge = dunningRetryCharge;
         this.clock = clock;
     }
 
@@ -308,6 +321,62 @@ public class SubscriptionService {
                 .orElseThrow(() -> new IllegalStateException("Subscription " + subscriptionId + " does not exist"));
         subscription.scheduleRetry(retryDueDate);
         subscriptionRepository.saveAndFlush(subscription);
+    }
+
+    /**
+     * Charges a {@code suspended} Subscription's card-on-file synchronously as a
+     * self-service Dunning retry, reusing {@link DunningRetryCharge} — the exact same
+     * charge/record/hand-off path {@code BillingJobRunner}'s scheduled day 1/3/7 loop
+     * drives — so this consumes one of the same bounded retry slots and can never
+     * record different bookkeeping than a scheduled retry. A resulting {@code
+     * suspended -> active} or {@code suspended -> canceled} transition (and its audit
+     * entry) is already committed by the port implementations {@link DunningRetryCharge}
+     * calls through by the time this method returns; a business decline that neither
+     * exhausts nor recovers is left {@code suspended} with its retry counter
+     * incremented, not treated as a rejection.
+     *
+     * <p>Deliberately not {@code @Transactional}: {@link DunningRetryCharge#attempt}
+     * calls the payment gateway, and this module's rule against external calls inside a
+     * database transaction applies here exactly as it does to the billing job's own
+     * call to the same method. The caller must fetch the Subscription's resulting state
+     * itself (e.g. via {@link #getOwnSubscription}) — this method reports only whether
+     * the attempt itself was rejected before any charge was made.
+     *
+     * @param subscriptionId          the Subscription to retry
+     * @param authenticatedCustomerId the Customer the caller's bearer token identifies
+     * @param idempotencyKey          the client-supplied {@code Idempotency-Key} header
+     *                                value, or null/blank if none was sent
+     * @throws SubscriptionAccessDeniedException  if the Subscription doesn't exist or
+     *         doesn't belong to this Customer
+     * @throws SubscriptionNotSuspendedException  if not currently {@code suspended}
+     * @throws PaymentGatewayUnavailableException if the gateway attempt fails
+     *         transiently — never thrown for a business decline, which is a normal
+     *         recorded outcome, not a rejection
+     */
+    public void retryPayment(UUID subscriptionId, UUID authenticatedCustomerId, String idempotencyKey) {
+        Subscription subscription = ownedSubscription(subscriptionId, authenticatedCustomerId);
+        boolean hasIdempotencyKey = StringUtils.hasText(idempotencyKey);
+        if (hasIdempotencyKey
+                && !idempotencyService.recordIfNew(authenticatedCustomerId, RETRY_PAYMENT_OPERATION, idempotencyKey)) {
+            return;
+        }
+        if (subscription.getState() != SubscriptionState.SUSPENDED) {
+            releaseIfPresent(hasIdempotencyKey, authenticatedCustomerId, idempotencyKey);
+            throw new SubscriptionNotSuspendedException(subscriptionId, subscription.getState());
+        }
+
+        ChargeableSubscription chargeable = chargeableSubscriptionPort.loadForCharge(subscriptionId);
+        DunningRetryChargeResult result = dunningRetryCharge.attempt(subscriptionId, chargeable, Instant.now(clock));
+        if (result instanceof DunningRetryChargeResult.FailedTransiently transientFailure) {
+            releaseIfPresent(hasIdempotencyKey, authenticatedCustomerId, idempotencyKey);
+            throw new PaymentGatewayUnavailableException(transientFailure.reason());
+        }
+    }
+
+    private void releaseIfPresent(boolean hasIdempotencyKey, UUID authenticatedCustomerId, String idempotencyKey) {
+        if (hasIdempotencyKey) {
+            idempotencyService.release(authenticatedCustomerId, RETRY_PAYMENT_OPERATION, idempotencyKey);
+        }
     }
 
     /**

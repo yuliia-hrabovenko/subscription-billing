@@ -15,8 +15,11 @@ import java.util.UUID;
  * period, matching the domain model's first-failed-charge-suspends business rule, and
  * drives the bounded day 1/3/7 retry loop by moving {@code due_date} so the billing
  * job's existing due-date query ({@code due_date <= today}) picks the Subscription back
- * up, with no new query needed. The self-service retry path is built by a later ticket
- * in this spec.
+ * up, with no new query needed. {@link #onRetryFailed} is also the decision a
+ * self-service retry (a Customer retrying payment directly rather than waiting for the
+ * next scheduled attempt) goes through, via
+ * {@link com.subscriptionbilling.billingjob.dunning.DunningRetryCharge} — so both
+ * triggers share the same reschedule-vs-cancel outcome.
  */
 @Component
 public class SuspendAndScheduleRetryDunningHandoff implements DunningHandoff {

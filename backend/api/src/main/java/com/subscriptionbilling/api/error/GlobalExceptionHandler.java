@@ -2,12 +2,14 @@ package com.subscriptionbilling.api.error;
 
 import com.subscriptionbilling.billingcore.plan.PlanUnavailableForSignupException;
 import com.subscriptionbilling.billingcore.subscription.DuplicateSubscriptionException;
+import com.subscriptionbilling.billingcore.subscription.PaymentGatewayUnavailableException;
 import com.subscriptionbilling.billingcore.subscription.PaymentMethodRequiredException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionAccessDeniedException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionAlreadyCanceledException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionAlreadyPendingCancellationException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionNotEligibleForPlanChangeException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionNotPendingCancellationException;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionNotSuspendedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -112,6 +114,26 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<Object> handleSubscriptionNotEligibleForPlanChange(
             SubscriptionNotEligibleForPlanChangeException ex) {
         return respond(HttpStatus.CONFLICT, "SUBSCRIPTION_NOT_ELIGIBLE_FOR_PLAN_CHANGE", ex.getMessage());
+    }
+
+    /**
+     * 403, not 409 like the other "not eligible" rejections above: a self-service
+     * payment retry is a per-request capability check ("are you the suspended
+     * subscriber this applies to"), not a conflict with the target resource's own state.
+     */
+    @ExceptionHandler(SubscriptionNotSuspendedException.class)
+    public ResponseEntity<Object> handleSubscriptionNotSuspended(SubscriptionNotSuspendedException ex) {
+        return respond(HttpStatus.FORBIDDEN, "SUBSCRIPTION_NOT_SUSPENDED", ex.getMessage());
+    }
+
+    /**
+     * The gateway itself failed transiently, not the request — safe to retry, so this
+     * is reported as an upstream failure rather than a client-facing rejection.
+     */
+    @ExceptionHandler(PaymentGatewayUnavailableException.class)
+    public ResponseEntity<Object> handlePaymentGatewayUnavailable(PaymentGatewayUnavailableException ex) {
+        log.warn("Payment gateway unavailable [correlationId={}]", CorrelationIds.current(), ex);
+        return respond(HttpStatus.BAD_GATEWAY, "PAYMENT_GATEWAY_UNAVAILABLE", ex.getMessage());
     }
 
     /**
