@@ -30,6 +30,9 @@ import java.util.UUID;
                 columnNames = {"subscription_id", "billing_period"}))
 public class Invoice {
 
+    /** Dunning retries are bounded at 3 (Invariant 11): initial charge plus at most 3 retries. */
+    public static final int MAX_RETRIES = 3;
+
     @Id
     private UUID id;
 
@@ -48,6 +51,9 @@ public class Invoice {
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
+
+    @Column(name = "retries_used", nullable = false)
+    private int retriesUsed;
 
     protected Invoice() {
     }
@@ -90,5 +96,31 @@ public class Invoice {
 
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public int getRetriesUsed() {
+        return retriesUsed;
+    }
+
+    /**
+     * @return whether {@link #MAX_RETRIES} retry Payment Attempts (scheduled or
+     * self-service) have already been recorded against this Invoice, independent of
+     * which day each one happened on
+     */
+    public boolean retriesExhausted() {
+        return retriesUsed >= MAX_RETRIES;
+    }
+
+    /**
+     * Records that one retry Payment Attempt (scheduled or self-service) was made
+     * against this Invoice.
+     *
+     * @throws IllegalStateException if {@link #retriesExhausted()} is already true
+     */
+    public void recordRetryAttempt() {
+        if (retriesExhausted()) {
+            throw new IllegalStateException("retriesUsed already at the cap of " + MAX_RETRIES);
+        }
+        retriesUsed++;
     }
 }
