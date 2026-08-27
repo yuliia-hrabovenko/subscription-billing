@@ -23,6 +23,7 @@ billing:
       # Dev-only fallback baked into StripeProperties itself; override via this env var
       # in every real environment (same convention as this file's DB_PASSWORD default).
       api-key: ${STRIPE_API_KEY:sk_test_dev_only_override_with_STRIPE_API_KEY_env_var_in_every_real_environment}
+      webhook-signing-secret: ${STRIPE_WEBHOOK_SECRET:whsec_dev_only_override_with_STRIPE_WEBHOOK_SECRET_env_var_in_every_real_environment}
 
 management:
   endpoints:
