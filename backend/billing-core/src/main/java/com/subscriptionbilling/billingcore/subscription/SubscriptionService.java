@@ -20,6 +20,7 @@ import org.springframework.util.StringUtils;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -264,6 +265,23 @@ public class SubscriptionService {
         auditLogEntryRepository.append(new AuditLogEntry(
                 UUID.randomUUID(), subscription.getId(), ActorType.SYSTEM, oldState.name(),
                 subscription.getState().name(), correlationId));
+    }
+
+    /**
+     * Moves a Subscription's {@code due_date} to {@code retryDueDate}, per {@link
+     * Subscription#scheduleRetry}. System-triggered, like {@link #suspend}: no
+     * authenticated Customer, no Idempotency-Key. Unlike {@link #suspend}, no
+     * AuditLogEntry is written, since {@code state} does not change.
+     *
+     * @param subscriptionId the Subscription to schedule the retry for
+     * @param retryDueDate   the next Dunning retry date
+     */
+    @Transactional
+    public void scheduleRetry(UUID subscriptionId, LocalDate retryDueDate) {
+        Subscription subscription = subscriptionRepository.findById(subscriptionId)
+                .orElseThrow(() -> new IllegalStateException("Subscription " + subscriptionId + " does not exist"));
+        subscription.scheduleRetry(retryDueDate);
+        subscriptionRepository.saveAndFlush(subscription);
     }
 
     /**

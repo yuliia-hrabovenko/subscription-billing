@@ -22,6 +22,7 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
@@ -729,5 +730,29 @@ class SubscriptionServiceTest {
                 .isInstanceOf(IllegalStateException.class);
 
         verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void scheduleRetryMovesTheDueDateAndWritesNoAuditLogEntrySinceStateDoesNotChange() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(subscriptionId,
+                new Customer(UUID.randomUUID(), "suspended-retry@example.com"), proPlan, SubscriptionState.SUSPENDED,
+                FIXED_NOW, LocalDate.of(2026, 8, 22));
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        service().scheduleRetry(subscriptionId, LocalDate.of(2026, 8, 23));
+
+        assertThat(subscription.getDueDate()).isEqualTo(LocalDate.of(2026, 8, 23));
+        verify(subscriptionRepository).saveAndFlush(subscription);
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void scheduleRetryOfANonexistentSubscriptionFailsFastInsteadOfSilentlyNoOping() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().scheduleRetry(subscriptionId, LocalDate.of(2026, 8, 23)))
+                .isInstanceOf(IllegalStateException.class);
     }
 }

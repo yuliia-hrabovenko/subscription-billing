@@ -310,6 +310,19 @@ public class Subscription {
     }
 
     /**
+     * Moves {@code due_date} to {@code retryDueDate}, the mechanism the billing job's
+     * existing due-date query ({@code due_date <= today}) relies on to pick this
+     * Subscription up for its next Dunning retry, with no new query needed. {@code
+     * state} is untouched; the caller decides whether a state transition (e.g. {@link
+     * #suspend()}) also applies.
+     *
+     * @param retryDueDate the next Dunning retry date
+     */
+    public void scheduleRetry(LocalDate retryDueDate) {
+        this.dueDate = retryDueDate;
+    }
+
+    /**
      * The success-path update applied after every successful charge, a Trial's
      * auto-conversion charge and an ordinary renewal alike, through one call so
      * neither the billing job nor its ports branch on which one they're driving. A

@@ -1,5 +1,6 @@
 package com.subscriptionbilling.billingjob.dunning;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -14,6 +15,9 @@ public interface DunningHandoff {
      *
      * @param subscriptionId the Subscription the failed charge was attempted against
      * @param invoiceId      the Invoice the failed Payment Attempt belongs to
+     * @param failedAt       the instant the gateway resolved this failed try; an
+     *                       implementation may use this as the basis for scheduling a
+     *                       retry
      */
-    void onChargeFailed(UUID subscriptionId, UUID invoiceId);
+    void onChargeFailed(UUID subscriptionId, UUID invoiceId, Instant failedAt);
 }
