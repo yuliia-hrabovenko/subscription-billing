@@ -82,4 +82,20 @@ public class SubscriptionController {
                 id, authenticatedCustomerId, request.planId(), idempotencyKey, CorrelationIds.current());
         return SubscriptionResponse.from(view);
     }
+
+    /**
+     * Unlike this controller's other mutating endpoints, {@link
+     * SubscriptionService#retryPayment} cannot itself return the resulting {@link
+     * SubscriptionView} — it must not run inside a database transaction spanning the
+     * synchronous gateway call, so a fresh, separately-transactional fetch is needed
+     * once it returns.
+     */
+    @PostMapping("/{id}/retry-payment")
+    public SubscriptionResponse retryPayment(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt,
+                                              @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        UUID authenticatedCustomerId = UUID.fromString(jwt.getSubject());
+        subscriptionService.retryPayment(id, authenticatedCustomerId, idempotencyKey);
+        SubscriptionView view = subscriptionService.getOwnSubscription(id, authenticatedCustomerId);
+        return SubscriptionResponse.from(view);
+    }
 }

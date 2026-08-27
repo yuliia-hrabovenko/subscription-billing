@@ -5,6 +5,7 @@ import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.due.DueSubscriptionsPort;
 import com.subscriptionbilling.billingjob.dunning.DunningHandoff;
+import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
@@ -73,9 +74,15 @@ class BillingJobRunnerTest {
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     private BillingJobRunner runner() {
+        // A plain instance wrapping this test's own mocks, not a separately mocked
+        // collaborator -- every verify() below against chargeRecordingPort/
+        // billingCycleAdvancePort/dunningHandoff still observes calls DunningRetryCharge
+        // makes through them on the Dunning-retry path.
+        DunningRetryCharge dunningRetryCharge = new DunningRetryCharge(
+                paymentGatewayClient, chargeRecordingPort, billingCycleAdvancePort, dunningHandoff);
         return new BillingJobRunner(dueSubscriptionsPort, pendingPlanChangePort, chargeableSubscriptionPort,
-                paymentGatewayClient, chargeRecordingPort, billingCycleAdvancePort, dunningHandoff, meterRegistry,
-                FIXED_CLOCK);
+                paymentGatewayClient, chargeRecordingPort, billingCycleAdvancePort, dunningHandoff,
+                dunningRetryCharge, meterRegistry, FIXED_CLOCK);
     }
 
     @Test

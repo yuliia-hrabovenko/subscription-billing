@@ -6,12 +6,13 @@ import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.due.DueSubscriptionsPort;
 import com.subscriptionbilling.billingjob.dunning.DunningHandoff;
+import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
+import com.subscriptionbilling.billingjob.dunning.DunningRetryChargeResult;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
-import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
 import com.subscriptionbilling.billingjob.planchange.PendingPlanChangeOutcome;
 import com.subscriptionbilling.billingjob.planchange.PendingPlanChangePort;
 import io.micrometer.core.instrument.Counter;
@@ -51,12 +52,11 @@ import java.util.UUID;
  *     <li>Decline (not a retry): records a failed PaymentAttempt and hands off to {@link
  *     DunningHandoff#onChargeFailed}, which suspends the Subscription and schedules its
  *     day-1 retry; the Anchor Date and {@code due_date} are left unchanged.
- *     <li>Decline (a retry): records a failed PaymentAttempt against the same Invoice and
- *     hands off to {@link DunningHandoff#onRetryFailed}, which either reschedules the next
- *     Dunning offset or, once the bound is reached, cancels the Subscription.
- *     <li>Transient/infra failure: no PaymentAttempt, no Dunning hand-off, no state
- *     change — never treated as a decline.
  * </ul>
+ *
+ * <p>A due Dunning retry is instead driven entirely through {@link DunningRetryCharge#attempt},
+ * shared with the self-service retry-payment endpoint so the two triggers can never
+ * record different bookkeeping for the same kind of attempt.
  *
  * <p>{@link ChargeAlreadyRecordedException} from a concurrent-record race is treated the
  * same as an already-invoiced skip, not a failure. Any other unexpected failure for one
@@ -74,6 +74,7 @@ public class BillingJobRunner {
     private final ChargeRecordingPort chargeRecordingPort;
     private final BillingCycleAdvancePort billingCycleAdvancePort;
     private final DunningHandoff dunningHandoff;
+    private final DunningRetryCharge dunningRetryCharge;
     private final Clock clock;
     private final Timer jobDuration;
     private final Counter subscriptionsProcessed;
@@ -92,9 +93,11 @@ public class BillingJobRunner {
                              ChargeRecordingPort chargeRecordingPort,
                              BillingCycleAdvancePort billingCycleAdvancePort,
                              DunningHandoff dunningHandoff,
+                             DunningRetryCharge dunningRetryCharge,
                              MeterRegistry meterRegistry) {
         this(dueSubscriptionsPort, pendingPlanChangePort, chargeableSubscriptionPort, paymentGatewayClient,
-                chargeRecordingPort, billingCycleAdvancePort, dunningHandoff, meterRegistry, Clock.systemUTC());
+                chargeRecordingPort, billingCycleAdvancePort, dunningHandoff, dunningRetryCharge, meterRegistry,
+                Clock.systemUTC());
     }
 
     BillingJobRunner(DueSubscriptionsPort dueSubscriptionsPort,
@@ -104,6 +107,7 @@ public class BillingJobRunner {
                       ChargeRecordingPort chargeRecordingPort,
                       BillingCycleAdvancePort billingCycleAdvancePort,
                       DunningHandoff dunningHandoff,
+                      DunningRetryCharge dunningRetryCharge,
                       MeterRegistry meterRegistry,
                       Clock clock) {
         this.dueSubscriptionsPort = dueSubscriptionsPort;
@@ -113,6 +117,7 @@ public class BillingJobRunner {
         this.chargeRecordingPort = chargeRecordingPort;
         this.billingCycleAdvancePort = billingCycleAdvancePort;
         this.dunningHandoff = dunningHandoff;
+        this.dunningRetryCharge = dunningRetryCharge;
         this.clock = clock;
         this.jobDuration = Timer.builder("billing_job_duration_seconds")
                 .description("Wall-clock duration of a single BillingJobRunner#run execution")
@@ -187,9 +192,13 @@ public class BillingJobRunner {
             return;
         }
 
-        ChargeResult result = paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.amount());
         Instant attemptedAt = Instant.now(clock);
         try {
+            if (chargeable.dunningRetry()) {
+                handleDunningRetryCharge(subscriptionId, chargeable, attemptedAt);
+                return;
+            }
+            ChargeResult result = paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.amount());
             switch (result) {
                 case ChargeResult.Succeeded succeeded -> handleSuccess(subscriptionId, chargeable, succeeded, attemptedAt);
                 case ChargeResult.Declined declined -> handleDecline(subscriptionId, chargeable, declined, attemptedAt);
@@ -216,39 +225,45 @@ public class BillingJobRunner {
         chargeRecordingPort.recordSuccessfulCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), succeeded.gatewayTransactionId(), attemptedAt);
 
-        // Also restores a Dunning retry's Subscription from suspended to active -- see
-        // BillingCycleAdvancePort's contract, driven entirely by the persisted
-        // Subscription's own state, not by anything branched on here.
         LocalDate nextDueDate = new AnchorDate(chargeable.anchorDayOfMonth()).next(chargeable.billingPeriod());
         billingCycleAdvancePort.advanceDueDate(subscriptionId, nextDueDate, succeeded.gatewayTransactionId());
-
-        if (chargeable.dunningRetry()) {
-            dunningAttempts.increment();
-            dunningRecoveries.increment();
-            log.info("Dunning retry succeeded for subscription {}: restored to active", subscriptionId);
-        } else {
-            subscriptionsProcessed.increment();
-        }
+        subscriptionsProcessed.increment();
     }
 
     private void handleDecline(UUID subscriptionId, ChargeableSubscription chargeable,
                                 ChargeResult.Declined declined, Instant attemptedAt) {
         UUID invoiceId = chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), attemptedAt);
-        if (chargeable.dunningRetry()) {
-            dunningAttempts.increment();
-            DunningRetryState retryState = chargeRecordingPort.recordRetryAttempt(invoiceId);
-            DunningRetryOutcome outcome = dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, attemptedAt);
-            if (outcome == DunningRetryOutcome.CANCELED) {
-                dunningExhaustions.increment();
-                log.info("Dunning retries exhausted for subscription {}: canceled", subscriptionId);
-            } else {
-                log.info("Dunning retry declined for subscription {}: rescheduled", subscriptionId);
+        dunningHandoff.onChargeFailed(subscriptionId, invoiceId, chargeable.billingPeriod(), attemptedAt);
+        declinedCharges.increment();
+        log.info("Charge declined for subscription {}: {}", subscriptionId, declined.reason());
+    }
+
+    /**
+     * The due Dunning retry path: delegates the charge attempt and its bookkeeping
+     * entirely to {@link DunningRetryCharge#attempt}, shared with the self-service
+     * retry-payment endpoint, and only translates the result into this job's own
+     * metrics/logging.
+     */
+    private void handleDunningRetryCharge(UUID subscriptionId, ChargeableSubscription chargeable, Instant attemptedAt) {
+        dunningAttempts.increment();
+        DunningRetryChargeResult result = dunningRetryCharge.attempt(subscriptionId, chargeable, attemptedAt);
+        switch (result) {
+            case DunningRetryChargeResult.Recovered recovered -> {
+                dunningRecoveries.increment();
+                log.info("Dunning retry succeeded for subscription {}: restored to active", subscriptionId);
             }
-        } else {
-            dunningHandoff.onChargeFailed(subscriptionId, invoiceId, chargeable.billingPeriod(), attemptedAt);
-            declinedCharges.increment();
-            log.info("Charge declined for subscription {}: {}", subscriptionId, declined.reason());
+            case DunningRetryChargeResult.Declined declined -> {
+                if (declined.outcome() == DunningRetryOutcome.CANCELED) {
+                    dunningExhaustions.increment();
+                    log.info("Dunning retries exhausted for subscription {}: canceled", subscriptionId);
+                } else {
+                    log.info("Dunning retry declined for subscription {}: rescheduled", subscriptionId);
+                }
+            }
+            case DunningRetryChargeResult.FailedTransiently transientFailure ->
+                    log.info("Dunning retry charge failed transiently for subscription {}: {}",
+                            subscriptionId, transientFailure.reason());
         }
     }
 }

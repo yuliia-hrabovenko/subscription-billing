@@ -12,6 +12,11 @@ import com.subscriptionbilling.billingcore.plan.PlanCatalogService;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
 import com.subscriptionbilling.billingcore.plan.PlanSummary;
 import com.subscriptionbilling.billingcore.plan.PlanUnavailableForSignupException;
+import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
+import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
+import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
+import com.subscriptionbilling.billingjob.dunning.DunningRetryChargeResult;
+import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -32,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -61,6 +67,10 @@ class SubscriptionServiceTest {
     private CustomerTokenIssuer tokenIssuer;
     @Mock
     private IdempotencyService idempotencyService;
+    @Mock
+    private ChargeableSubscriptionPort chargeableSubscriptionPort;
+    @Mock
+    private DunningRetryCharge dunningRetryCharge;
 
     private final UUID planId = UUID.randomUUID();
     private final Plan freePlan = new Plan(planId, "free", "Free");
@@ -69,7 +79,7 @@ class SubscriptionServiceTest {
     private SubscriptionService service() {
         return new SubscriptionService(customerRepository, planRepository, subscriptionRepository,
                 planCatalogService, auditLogEntryRepository, tokenIssuer, idempotencyService,
-                Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
+                chargeableSubscriptionPort, dunningRetryCharge, Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
     }
 
     @Test
@@ -801,5 +811,139 @@ class SubscriptionServiceTest {
 
         assertThatThrownBy(() -> service().scheduleRetry(subscriptionId, LocalDate.of(2026, 8, 23)))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void retryPaymentFromSuspendedLoadsChargeDetailsAndDelegatesToDunningRetryCharge() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "suspended@example.com"), proPlan, SubscriptionState.SUSPENDED);
+        ChargeableSubscription chargeable = new ChargeableSubscription(
+                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 1), 1, true);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
+        when(dunningRetryCharge.attempt(subscriptionId, chargeable, FIXED_NOW))
+                .thenReturn(new DunningRetryChargeResult.Recovered("gw-txn-1"));
+
+        service().retryPayment(subscriptionId, customerId, null);
+
+        verify(dunningRetryCharge).attempt(subscriptionId, chargeable, FIXED_NOW);
+    }
+
+    @Test
+    void retryPaymentOnANonSuspendedSubscriptionIsRejectedWithoutChargingTheGateway() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(customerId, "active@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, null))
+                .isInstanceOf(SubscriptionNotSuspendedException.class);
+
+        verifyNoInteractions(chargeableSubscriptionPort, dunningRetryCharge);
+    }
+
+    @Test
+    void retryPaymentForAWrongOwnerIsRejectedWithAccessDenied() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(subscriptionId,
+                new Customer(UUID.randomUUID(), "owner@example.com"), proPlan, SubscriptionState.SUSPENDED);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().retryPayment(subscriptionId, UUID.randomUUID(), null))
+                .isInstanceOf(SubscriptionAccessDeniedException.class);
+
+        verifyNoInteractions(chargeableSubscriptionPort, dunningRetryCharge);
+    }
+
+    @Test
+    void aRepeatedRetryPaymentWithTheSameIdempotencyKeyDoesNotChargeTheGatewayAgain() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "retry@example.com"), proPlan, SubscriptionState.SUSPENDED);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-1"))
+                .thenReturn(false);
+
+        service().retryPayment(subscriptionId, customerId, "key-1");
+
+        verifyNoInteractions(chargeableSubscriptionPort, dunningRetryCharge);
+    }
+
+    @Test
+    void retryPaymentOnANonSuspendedSubscriptionWithAnIdempotencyKeyReleasesIt() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(customerId, "active@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-2"))
+                .thenReturn(true);
+
+        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, "key-2"))
+                .isInstanceOf(SubscriptionNotSuspendedException.class);
+
+        verify(idempotencyService).release(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-2");
+    }
+
+    @Test
+    void retryPaymentThatFailsTransientlyReleasesTheIdempotencyKeyAndThrows() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "suspended@example.com"), proPlan, SubscriptionState.SUSPENDED);
+        ChargeableSubscription chargeable = new ChargeableSubscription(
+                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 1), 1, true);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-3"))
+                .thenReturn(true);
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
+        when(dunningRetryCharge.attempt(subscriptionId, chargeable, FIXED_NOW))
+                .thenReturn(new DunningRetryChargeResult.FailedTransiently("gateway_timeout"));
+
+        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, "key-3"))
+                .isInstanceOf(PaymentGatewayUnavailableException.class);
+
+        verify(idempotencyService).release(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-3");
+    }
+
+    @Test
+    void retryPaymentThatIsDeclinedDoesNotThrowAndKeepsTheIdempotencyKey() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(
+                subscriptionId, new Customer(customerId, "suspended@example.com"), proPlan, SubscriptionState.SUSPENDED);
+        ChargeableSubscription chargeable = new ChargeableSubscription(
+                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 1), 1, true);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+        when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-4"))
+                .thenReturn(true);
+        when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
+        when(dunningRetryCharge.attempt(subscriptionId, chargeable, FIXED_NOW))
+                .thenReturn(new DunningRetryChargeResult.Declined(DunningRetryOutcome.RESCHEDULED, "card_declined"));
+
+        service().retryPayment(subscriptionId, customerId, "key-4");
+
+        // A decline is a normal recorded outcome, not a rejection of the request itself
+        // -- the key stays consumed so a client retry of the exact same request doesn't
+        // trigger a second Payment Attempt.
+        verify(idempotencyService, never()).release(any(), any(), any());
+    }
+
+    @Test
+    void retryPaymentWithNoIdempotencyKeyNeverTouchesIdempotencyServiceEvenOnRejection() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(customerId, "active@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, null))
+                .isInstanceOf(SubscriptionNotSuspendedException.class);
+
+        verifyNoInteractions(idempotencyService);
     }
 }
