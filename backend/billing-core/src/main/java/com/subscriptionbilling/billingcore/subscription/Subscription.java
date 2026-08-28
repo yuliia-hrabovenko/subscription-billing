@@ -226,6 +226,34 @@ public class Subscription {
     }
 
     /**
+     * The direct {@code active -> canceled} and {@code suspended -> canceled} edges
+     * taken when a charge against this Subscription is disputed, bypassing {@code
+     * pending_cancellation} even from {@code active} and bypassing further Dunning
+     * retries entirely from {@code suspended} — unlike {@link #cancel()}, an open
+     * Billing Cycle never defers this transition. Already {@code canceled} is left
+     * untouched rather than rejected: a dispute racing an unrelated cancellation trigger
+     * (e.g. Dunning exhaustion) for the same Subscription must never conflict with
+     * whichever one got there first.
+     *
+     * @throws SubscriptionNotEligibleForDisputeCancellationException if currently
+     *         {@code trialing} or {@code pending_cancellation} — the two lifecycle
+     *         states with no defined dispute-cancellation edge to {@code canceled}
+     */
+    public void cancelForDispute() {
+        state = switch (state) {
+            case ACTIVE, SUSPENDED -> {
+                trialEndsAt = null;
+                billingCycleAnchor = null;
+                dunningBillingPeriod = null;
+                yield SubscriptionState.CANCELED;
+            }
+            case CANCELED -> SubscriptionState.CANCELED;
+            case TRIALING, PENDING_CANCELLATION ->
+                    throw new SubscriptionNotEligibleForDisputeCancellationException(id, state);
+        };
+    }
+
+    /**
      * The paid-to-paid, paid-to-free, and free-to-paid plan-change edges. {@code state}
      * never changes (plan changes aren't part of the state diagram) — only reachable
      * from {@code ACTIVE}, the one state with current paid or free access to change out

@@ -824,6 +824,85 @@ class SubscriptionServiceTest {
     }
 
     @Test
+    void cancelForDisputeFromActiveTransitionsImmediatelyToCanceledAndWritesASystemAuditLogEntry() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(UUID.randomUUID(), "disputed@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        service().cancelForDispute(subscriptionId, "corr-dispute-1");
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.CANCELED);
+        verify(subscriptionRepository).saveAndFlush(subscription);
+        verify(invoiceCancellationPort, never()).failStillOpenInvoice(any(), any());
+
+        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.SYSTEM);
+        assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
+        assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
+        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-dispute-1");
+    }
+
+    @Test
+    void cancelForDisputeFromSuspendedTransitionsImmediatelyToCanceledAndFailsTheStillOpenInvoice() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(UUID.randomUUID(), "disputed-suspended@example.com"), proPlan, FIXED_NOW);
+        subscription.suspend(LocalDate.of(2026, 8, 1));
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        service().cancelForDispute(subscriptionId, "corr-dispute-2");
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.CANCELED);
+        verify(invoiceCancellationPort).failStillOpenInvoice(subscriptionId, LocalDate.of(2026, 8, 1));
+
+        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getOldState()).isEqualTo("SUSPENDED");
+        assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
+    }
+
+    @Test
+    void cancelForDisputeOnAnAlreadyCanceledSubscriptionIsASafeNoOpWritingNoAuditLogEntry() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = new Subscription(subscriptionId,
+                new Customer(UUID.randomUUID(), "already-canceled-dispute@example.com"), proPlan, SubscriptionState.CANCELED);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        service().cancelForDispute(subscriptionId, "corr-dispute-3");
+
+        verify(subscriptionRepository, never()).saveAndFlush(any());
+        verify(auditLogEntryRepository, never()).append(any());
+        verifyNoInteractions(invoiceCancellationPort);
+    }
+
+    @Test
+    void cancelForDisputeFromTrialingIsRejectedAndWritesNoAuditLogEntry() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startTrial(
+                subscriptionId, new Customer(UUID.randomUUID(), "trialist-dispute@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        assertThatThrownBy(() -> service().cancelForDispute(subscriptionId, "corr-dispute-4"))
+                .isInstanceOf(SubscriptionNotEligibleForDisputeCancellationException.class);
+
+        verify(subscriptionRepository, never()).saveAndFlush(any());
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
+    void cancelForDisputeOfANonexistentSubscriptionFailsFastInsteadOfSilentlyNoOping() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().cancelForDispute(subscriptionId, "corr-dispute-5"))
+                .isInstanceOf(IllegalStateException.class);
+
+        verify(auditLogEntryRepository, never()).append(any());
+    }
+
+    @Test
     void scheduleRetryMovesTheDueDateAndWritesNoAuditLogEntrySinceStateDoesNotChange() {
         UUID subscriptionId = UUID.randomUUID();
         Subscription subscription = new Subscription(subscriptionId,

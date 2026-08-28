@@ -117,6 +117,58 @@ class SubscriptionTest {
     }
 
     @Test
+    void cancelForDisputeFromActiveWithABillingCycleTransitionsImmediatelyToCanceledInsteadOfDeferring() {
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
+
+        subscription.cancelForDispute();
+
+        // Unlike cancel(), an open Billing Cycle never defers this to pending_cancellation.
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.CANCELED);
+        assertThat(subscription.getBillingCycleAnchor()).isNull();
+    }
+
+    @Test
+    void cancelForDisputeFromActiveWithNoBillingCycleTransitionsImmediatelyToCanceled() {
+        Subscription subscription = subscriptionIn(SubscriptionState.ACTIVE);
+
+        subscription.cancelForDispute();
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.CANCELED);
+    }
+
+    @Test
+    void cancelForDisputeFromSuspendedTransitionsImmediatelyToCanceledAndClearsTheDunningBillingPeriod() {
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
+        subscription.suspend(LocalDate.of(2026, 8, 24));
+
+        subscription.cancelForDispute();
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.CANCELED);
+        assertThat(subscription.getDunningBillingPeriod()).isNull();
+    }
+
+    @Test
+    void cancelForDisputeOnAnAlreadyCanceledSubscriptionIsASafeNoOp() {
+        Subscription subscription = subscriptionIn(SubscriptionState.CANCELED);
+
+        subscription.cancelForDispute();
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.CANCELED);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = SubscriptionState.class, names = {"TRIALING", "PENDING_CANCELLATION"})
+    void cancelForDisputeFromTrialingOrPendingCancellationIsRejected(SubscriptionState originatingState) {
+        Subscription subscription = subscriptionIn(originatingState);
+
+        assertThatThrownBy(subscription::cancelForDispute)
+                .isInstanceOf(SubscriptionNotEligibleForDisputeCancellationException.class);
+
+        // Rejected transitions never mutate state — still exactly where it started.
+        assertThat(subscription.getState()).isEqualTo(originatingState);
+    }
+
+    @Test
     void undoCancelFromPendingCancellationRestoresActive() {
         Subscription subscription = subscriptionIn(SubscriptionState.PENDING_CANCELLATION);
 

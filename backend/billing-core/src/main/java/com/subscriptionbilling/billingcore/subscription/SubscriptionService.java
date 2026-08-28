@@ -329,6 +329,47 @@ public class SubscriptionService {
     }
 
     /**
+     * Cancels a Subscription directly in response to a disputed charge, per {@link
+     * Subscription#cancelForDispute()}'s {@code active -> canceled} and {@code
+     * suspended -> canceled} edges. System-triggered, like {@link #suspend}: no
+     * authenticated Customer, no Idempotency-Key — redelivery safety for the triggering
+     * webhook event is the caller's responsibility (event-id deduplication), not this
+     * method's.
+     *
+     * <p>Already {@code canceled} is a safe no-op: returns without writing a second
+     * {@link com.subscriptionbilling.audit.AuditLogEntry} or touching persistence, so a
+     * dispute racing an unrelated cancellation trigger for the same Subscription never
+     * conflicts. Canceling directly from {@code suspended} also fails that Billing
+     * Cycle's still-open Invoice, via {@link InvoiceCancellationPort#failStillOpenInvoice}
+     * — same reasoning as {@link #cancel}'s suspended-origin handling.
+     *
+     * @param subscriptionId the Subscription to cancel
+     * @param correlationId  rides along on the written {@link
+     *                       com.subscriptionbilling.audit.AuditLogEntry}
+     * @throws SubscriptionNotEligibleForDisputeCancellationException if currently
+     *         {@code trialing} or {@code pending_cancellation}
+     */
+    @Transactional
+    public void cancelForDispute(UUID subscriptionId, String correlationId) {
+        Subscription subscription = subscriptionRepository.findById(subscriptionId)
+                .orElseThrow(() -> new IllegalStateException("Subscription " + subscriptionId + " does not exist"));
+        SubscriptionState oldState = subscription.getState();
+        if (oldState == SubscriptionState.CANCELED) {
+            return;
+        }
+
+        LocalDate stillOpenBillingPeriod = subscription.getDunningBillingPeriod();
+        subscription.cancelForDispute();
+        subscriptionRepository.saveAndFlush(subscription);
+        auditLogEntryRepository.append(new AuditLogEntry(
+                UUID.randomUUID(), subscription.getId(), ActorType.SYSTEM, oldState.name(),
+                subscription.getState().name(), correlationId));
+        if (stillOpenBillingPeriod != null) {
+            invoiceCancellationPort.failStillOpenInvoice(subscriptionId, stillOpenBillingPeriod);
+        }
+    }
+
+    /**
      * Moves a Subscription's {@code due_date} to {@code retryDueDate}, per {@link
      * Subscription#scheduleRetry}. System-triggered, like {@link #suspend}: no
      * authenticated Customer, no Idempotency-Key. Unlike {@link #suspend}, no
