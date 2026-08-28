@@ -26,9 +26,15 @@ public interface InvoiceRepository extends JpaRepository<Invoice, UUID> {
      * across pages. Pass null for {@code cursorCreatedAt}/{@code cursorId} to fetch the
      * first page; {@code pageable} should request one row beyond the caller's page size
      * so the caller can tell whether a further page exists.
+     *
+     * <p>{@code cursorCreatedAt}'s first, bare {@code IS NULL} check is cast explicitly:
+     * left untyped, Postgres' extended query protocol can't infer a type for a parameter
+     * used only in an {@code IS NULL} comparison and rejects the query outright ({@code
+     * "could not determine data type of parameter"}), even though every other occurrence
+     * of the same named parameter is typed fine via its comparison to {@code createdAt}.
      */
     @Query("SELECT i FROM Invoice i WHERE i.subscriptionId = :subscriptionId "
-            + "AND (:cursorCreatedAt IS NULL "
+            + "AND (CAST(:cursorCreatedAt AS java.time.Instant) IS NULL "
             + "     OR i.createdAt < :cursorCreatedAt "
             + "     OR (i.createdAt = :cursorCreatedAt AND i.id < :cursorId)) "
             + "ORDER BY i.createdAt DESC, i.id DESC")

@@ -12,6 +12,7 @@ import com.subscriptionbilling.billingcore.subscription.SubscriptionNotPendingCa
 import com.subscriptionbilling.billingcore.subscription.SubscriptionNotSuspendedException;
 import com.subscriptionbilling.invoicing.invoice.InvalidCursorException;
 import com.subscriptionbilling.invoicing.invoice.InvoiceAccessDeniedException;
+import com.subscriptionbilling.invoicing.receipt.ReceiptNotAvailableException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -87,6 +88,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(InvalidCursorException.class)
     public ResponseEntity<Object> handleInvalidCursor(InvalidCursorException ex) {
         return respond(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", ex.getMessage());
+    }
+
+    /**
+     * The caller is authorized for this Invoice but its receipt doesn't exist yet (or
+     * ever will, for a failed Invoice) — a conflict with the Invoice's current state,
+     * not a malformed request or an access rejection.
+     */
+    @ExceptionHandler(ReceiptNotAvailableException.class)
+    public ResponseEntity<Object> handleReceiptNotAvailable(ReceiptNotAvailableException ex) {
+        return respond(HttpStatus.CONFLICT, "RECEIPT_NOT_AVAILABLE", ex.getMessage());
     }
 
     /**
