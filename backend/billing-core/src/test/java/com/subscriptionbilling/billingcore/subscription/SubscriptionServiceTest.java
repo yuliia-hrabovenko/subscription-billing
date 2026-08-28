@@ -17,6 +17,7 @@ import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryChargeResult;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
+import com.subscriptionbilling.billingjob.invoicing.InvoiceCancellationPort;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -71,6 +72,8 @@ class SubscriptionServiceTest {
     private ChargeableSubscriptionPort chargeableSubscriptionPort;
     @Mock
     private DunningRetryCharge dunningRetryCharge;
+    @Mock
+    private InvoiceCancellationPort invoiceCancellationPort;
 
     private final UUID planId = UUID.randomUUID();
     private final Plan freePlan = new Plan(planId, "free", "Free");
@@ -79,7 +82,8 @@ class SubscriptionServiceTest {
     private SubscriptionService service() {
         return new SubscriptionService(customerRepository, planRepository, subscriptionRepository,
                 planCatalogService, auditLogEntryRepository, tokenIssuer, idempotencyService,
-                chargeableSubscriptionPort, dunningRetryCharge, Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
+                chargeableSubscriptionPort, dunningRetryCharge, invoiceCancellationPort,
+                Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
     }
 
     @Test
@@ -350,6 +354,36 @@ class SubscriptionServiceTest {
         SubscriptionView view = service().cancel(subscriptionId, customerId, null, "corr-cancel-3");
 
         assertThat(view.state()).isEqualTo(SubscriptionState.CANCELED);
+        // No dunningBillingPeriod on this hand-seeded fixture (only suspend() sets one) --
+        // there's no still-open Invoice to fail.
+        verify(invoiceCancellationPort, never()).failStillOpenInvoice(any(), any());
+    }
+
+    @Test
+    void cancelFromSuspendedFailsTheStillOpenInvoiceForTheDunningBillingPeriod() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(customerId, "suspended-real@example.com"), proPlan, FIXED_NOW);
+        subscription.suspend(LocalDate.of(2026, 8, 1));
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        service().cancel(subscriptionId, customerId, null, "corr-cancel-3b");
+
+        verify(invoiceCancellationPort).failStillOpenInvoice(subscriptionId, LocalDate.of(2026, 8, 1));
+    }
+
+    @Test
+    void cancelFromActiveOrTrialingNeverFailsAnInvoiceSinceNeitherHasADunningBillingPeriod() {
+        UUID customerId = UUID.randomUUID();
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startTrial(
+                subscriptionId, new Customer(customerId, "trialist@example.com"), proPlan, FIXED_NOW);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        service().cancel(subscriptionId, customerId, null, "corr-cancel-3c");
+
+        verifyNoInteractions(invoiceCancellationPort);
     }
 
     @Test

@@ -16,6 +16,7 @@ import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryChargeResult;
+import com.subscriptionbilling.billingjob.invoicing.InvoiceCancellationPort;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,6 +27,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -65,6 +67,7 @@ public class SubscriptionService {
     private final IdempotencyService idempotencyService;
     private final ChargeableSubscriptionPort chargeableSubscriptionPort;
     private final DunningRetryCharge dunningRetryCharge;
+    private final InvoiceCancellationPort invoiceCancellationPort;
     private final Clock clock;
 
     @Autowired
@@ -72,16 +75,17 @@ public class SubscriptionService {
                                 SubscriptionRepository subscriptionRepository, PlanCatalogService planCatalogService,
                                 AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
                                 IdempotencyService idempotencyService, ChargeableSubscriptionPort chargeableSubscriptionPort,
-                                DunningRetryCharge dunningRetryCharge) {
+                                DunningRetryCharge dunningRetryCharge, InvoiceCancellationPort invoiceCancellationPort) {
         this(customerRepository, planRepository, subscriptionRepository, planCatalogService, auditLogEntryRepository,
-                tokenIssuer, idempotencyService, chargeableSubscriptionPort, dunningRetryCharge, Clock.systemUTC());
+                tokenIssuer, idempotencyService, chargeableSubscriptionPort, dunningRetryCharge, invoiceCancellationPort,
+                Clock.systemUTC());
     }
 
     SubscriptionService(CustomerRepository customerRepository, PlanRepository planRepository,
                          SubscriptionRepository subscriptionRepository, PlanCatalogService planCatalogService,
                          AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
                          IdempotencyService idempotencyService, ChargeableSubscriptionPort chargeableSubscriptionPort,
-                         DunningRetryCharge dunningRetryCharge, Clock clock) {
+                         DunningRetryCharge dunningRetryCharge, InvoiceCancellationPort invoiceCancellationPort, Clock clock) {
         this.customerRepository = customerRepository;
         this.planRepository = planRepository;
         this.subscriptionRepository = subscriptionRepository;
@@ -91,6 +95,7 @@ public class SubscriptionService {
         this.idempotencyService = idempotencyService;
         this.chargeableSubscriptionPort = chargeableSubscriptionPort;
         this.dunningRetryCharge = dunningRetryCharge;
+        this.invoiceCancellationPort = invoiceCancellationPort;
         this.clock = clock;
     }
 
@@ -173,6 +178,14 @@ public class SubscriptionService {
      * vs. deferred termination. A blank or absent {@code idempotencyKey} skips
      * deduplication — see {@link #applyTransition} for the dedup/release contract.
      *
+     * <p>Canceling directly from {@code suspended} also fails that Billing Cycle's
+     * still-open Invoice, via {@link InvoiceCancellationPort#failStillOpenInvoice}: the
+     * cancellation ends Dunning's retry sequence early, so the Invoice becomes terminal
+     * {@code failed} immediately even though fewer than the full retry bound was used.
+     * The Billing Cycle is read from {@link Subscription#getDunningBillingPeriod()}
+     * before the transition clears it, so this only fires for the {@code suspended}
+     * origin — every other origin has no Invoice still open.
+     *
      * @param subscriptionId          the Subscription to cancel
      * @param authenticatedCustomerId the Customer the caller's bearer token identifies
      * @param idempotencyKey          the client-supplied {@code Idempotency-Key} header
@@ -190,8 +203,17 @@ public class SubscriptionService {
     @Transactional
     public SubscriptionView cancel(UUID subscriptionId, UUID authenticatedCustomerId, String idempotencyKey,
                                     String correlationId) {
-        return applyTransition(subscriptionId, authenticatedCustomerId, idempotencyKey, CANCEL_OPERATION,
-                Subscription::cancel, correlationId);
+        AtomicReference<LocalDate> stillOpenBillingPeriod = new AtomicReference<>();
+        SubscriptionView view = applyTransition(subscriptionId, authenticatedCustomerId, idempotencyKey, CANCEL_OPERATION,
+                subscription -> {
+                    stillOpenBillingPeriod.set(subscription.getDunningBillingPeriod());
+                    subscription.cancel();
+                }, correlationId);
+        LocalDate billingPeriod = stillOpenBillingPeriod.get();
+        if (billingPeriod != null) {
+            invoiceCancellationPort.failStillOpenInvoice(subscriptionId, billingPeriod);
+        }
+        return view;
     }
 
     /**

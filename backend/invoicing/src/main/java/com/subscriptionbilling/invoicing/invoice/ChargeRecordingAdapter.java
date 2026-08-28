@@ -22,7 +22,8 @@ import java.util.UUID;
  * this class's own find-then-create check — is the final word against two concurrent job
  * instances both racing to create the same Invoice; losing that race surfaces as {@link
  * ChargeAlreadyRecordedException} rather than a duplicate row or a raw {@link
- * DataIntegrityViolationException}.
+ * DataIntegrityViolationException}. Also drives the Invoice's terminal status: a success
+ * marks it {@code paid}; a retry that exhausts the bound marks it {@code failed}.
  */
 @Component
 public class ChargeRecordingAdapter implements ChargeRecordingPort {
@@ -50,6 +51,8 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
         Invoice invoice = findOrCreateInvoice(subscriptionId, billingPeriod, priceVersionId);
         paymentAttemptRepository.save(
                 new PaymentAttempt(UUID.randomUUID(), invoice, PaymentAttemptStatus.SUCCEEDED, attemptedAt));
+        invoice.markPaid();
+        invoiceRepository.save(invoice);
         log.info("Charge succeeded for subscription {} billing period {}: invoice {}, gateway transaction {}",
                 subscriptionId, billingPeriod, invoice.getId(), gatewayTransactionId);
     }
@@ -72,6 +75,9 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
         Invoice invoice = invoiceRepository.findById(invoiceId)
                 .orElseThrow(() -> new IllegalStateException("Invoice " + invoiceId + " does not exist"));
         invoice.recordRetryAttempt();
+        if (invoice.retriesExhausted()) {
+            invoice.markFailed();
+        }
         invoiceRepository.saveAndFlush(invoice);
         return new DunningRetryState(invoice.getCreatedAt(), invoice.getRetriesUsed(), invoice.retriesExhausted());
     }
