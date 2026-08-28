@@ -10,6 +10,8 @@ import com.subscriptionbilling.billingcore.subscription.SubscriptionAlreadyPendi
 import com.subscriptionbilling.billingcore.subscription.SubscriptionNotEligibleForPlanChangeException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionNotPendingCancellationException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionNotSuspendedException;
+import com.subscriptionbilling.invoicing.invoice.InvalidCursorException;
+import com.subscriptionbilling.invoicing.invoice.InvoiceAccessDeniedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -66,6 +68,25 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(SubscriptionAccessDeniedException.class)
     public ResponseEntity<Object> handleSubscriptionAccessDenied(SubscriptionAccessDeniedException ex) {
         return respond(HttpStatus.FORBIDDEN, "FORBIDDEN", ex.getMessage());
+    }
+
+    /**
+     * ADR-0003: an unowned Invoice must fail with 403, never 404 — see {@link
+     * InvoiceAccessDeniedException}'s Javadoc for why not-found and not-owned are the
+     * same outcome here.
+     */
+    @ExceptionHandler(InvoiceAccessDeniedException.class)
+    public ResponseEntity<Object> handleInvoiceAccessDenied(InvoiceAccessDeniedException ex) {
+        return respond(HttpStatus.FORBIDDEN, "FORBIDDEN", ex.getMessage());
+    }
+
+    /**
+     * A malformed or tampered pagination cursor is a client input error, not a
+     * not-found/not-owned Invoice — 400, not 403.
+     */
+    @ExceptionHandler(InvalidCursorException.class)
+    public ResponseEntity<Object> handleInvalidCursor(InvalidCursorException ex) {
+        return respond(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", ex.getMessage());
     }
 
     /**

@@ -5,8 +5,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -76,5 +79,49 @@ class InvoiceRepositoryTest extends AbstractPostgresIntegrationTest {
         invoiceRepository.saveAndFlush(nextCycle);
 
         assertThat(invoiceRepository.findById(nextCycle.getId())).isPresent();
+    }
+
+    @Test
+    void findPageBySubscriptionIdOrdersNewestFirstAndIgnoresOtherSubscriptions() {
+        UUID subscriptionId = UUID.randomUUID();
+        Invoice oldest = invoiceRepository.saveAndFlush(
+                new Invoice(UUID.randomUUID(), subscriptionId, LocalDate.of(2027, 1, 31), UUID.randomUUID()));
+        Invoice newest = invoiceRepository.saveAndFlush(
+                new Invoice(UUID.randomUUID(), subscriptionId, LocalDate.of(2027, 2, 28), UUID.randomUUID()));
+        invoiceRepository.saveAndFlush(
+                new Invoice(UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2027, 2, 28), UUID.randomUUID()));
+
+        List<Invoice> page = invoiceRepository.findPageBySubscriptionId(subscriptionId, null, null, PageRequest.of(0, 10));
+
+        assertThat(page).extracting(Invoice::getId).containsExactly(newest.getId(), oldest.getId());
+    }
+
+    @Test
+    void findPageBySubscriptionIdWithACursorNeitherRepeatsNorSkipsARowAcrossTwoPages() {
+        // Deliberately doesn't assert on createdAt spacing -- the query's own
+        // createdAt-desc/id-desc tie-break is what guarantees no repeat/skip even when
+        // rows share the same createdAt (a coarse clock can produce that within a tight
+        // test loop), not any assumption about timestamp precision.
+        UUID subscriptionId = UUID.randomUUID();
+        Invoice first = invoiceRepository.saveAndFlush(
+                new Invoice(UUID.randomUUID(), subscriptionId, LocalDate.of(2027, 1, 31), UUID.randomUUID()));
+        Invoice second = invoiceRepository.saveAndFlush(
+                new Invoice(UUID.randomUUID(), subscriptionId, LocalDate.of(2027, 2, 28), UUID.randomUUID()));
+        Invoice third = invoiceRepository.saveAndFlush(
+                new Invoice(UUID.randomUUID(), subscriptionId, LocalDate.of(2027, 3, 31), UUID.randomUUID()));
+
+        List<Invoice> firstPage = invoiceRepository.findPageBySubscriptionId(subscriptionId, null, null, PageRequest.of(0, 2));
+        assertThat(firstPage).hasSize(2);
+        Invoice cursorRow = firstPage.get(1);
+
+        List<Invoice> secondPage = invoiceRepository.findPageBySubscriptionId(
+                subscriptionId, cursorRow.getCreatedAt(), cursorRow.getId(), PageRequest.of(0, 2));
+
+        assertThat(secondPage).extracting(Invoice::getId).doesNotContainAnyElementsOf(
+                firstPage.stream().map(Invoice::getId).toList());
+        List<UUID> allIds = new ArrayList<>();
+        firstPage.forEach(invoice -> allIds.add(invoice.getId()));
+        secondPage.forEach(invoice -> allIds.add(invoice.getId()));
+        assertThat(allIds).containsExactlyInAnyOrder(first.getId(), second.getId(), third.getId());
     }
 }
