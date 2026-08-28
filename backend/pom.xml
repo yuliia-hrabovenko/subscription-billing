@@ -32,6 +32,7 @@
         <module>invoicing</module>
         <module>notifications</module>
         <module>payments</module>
+        <module>webhooks</module>
         <module>api</module>
     </modules>
 

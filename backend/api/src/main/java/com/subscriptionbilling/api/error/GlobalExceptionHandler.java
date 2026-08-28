@@ -13,6 +13,8 @@ import com.subscriptionbilling.billingcore.subscription.SubscriptionNotSuspended
 import com.subscriptionbilling.invoicing.invoice.InvalidCursorException;
 import com.subscriptionbilling.invoicing.invoice.InvoiceAccessDeniedException;
 import com.subscriptionbilling.invoicing.receipt.ReceiptNotAvailableException;
+import com.subscriptionbilling.webhooks.ingestion.InvalidWebhookSignatureException;
+import com.subscriptionbilling.webhooks.ingestion.MalformedWebhookPayloadException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -166,6 +168,27 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<Object> handlePaymentGatewayUnavailable(PaymentGatewayUnavailableException ex) {
         log.warn("Payment gateway unavailable [correlationId={}]", CorrelationIds.current(), ex);
         return respond(HttpStatus.BAD_GATEWAY, "PAYMENT_GATEWAY_UNAVAILABLE", ex.getMessage());
+    }
+
+    /**
+     * A gateway webhook request whose signature doesn't verify — never a customer
+     * bearer-token rejection, but the same 401 status since both mean "this caller
+     * isn't who it claims to be."
+     */
+    @ExceptionHandler(InvalidWebhookSignatureException.class)
+    public ResponseEntity<Object> handleInvalidWebhookSignature(InvalidWebhookSignatureException ex) {
+        log.warn("Webhook signature verification failed [correlationId={}]", CorrelationIds.current());
+        return respond(HttpStatus.UNAUTHORIZED, "INVALID_WEBHOOK_SIGNATURE", ex.getMessage());
+    }
+
+    /**
+     * A signature-verified webhook payload that isn't valid JSON, is missing its event
+     * id, or has an event type this system doesn't recognize — a malformed request,
+     * not an authentication failure.
+     */
+    @ExceptionHandler(MalformedWebhookPayloadException.class)
+    public ResponseEntity<Object> handleMalformedWebhookPayload(MalformedWebhookPayloadException ex) {
+        return respond(HttpStatus.BAD_REQUEST, "MALFORMED_WEBHOOK_PAYLOAD", ex.getMessage());
     }
 
     /**
