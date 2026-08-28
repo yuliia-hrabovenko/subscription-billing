@@ -5,7 +5,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
-import jakarta.persistence.Lob;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
@@ -31,7 +30,6 @@ public class Receipt {
     @JoinColumn(name = "invoice_id", nullable = false)
     private Invoice invoice;
 
-    @Lob
     @Column(nullable = false)
     private byte[] pdf;
 

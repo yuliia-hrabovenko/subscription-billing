@@ -1,7 +1,11 @@
 package com.subscriptionbilling.api.invoice;
 
 import com.subscriptionbilling.invoicing.invoice.InvoiceService;
+import com.subscriptionbilling.invoicing.receipt.ReceiptService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -12,11 +16,11 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * A subscriber's own billing history: listing a Subscription's Invoices and fetching
- * one individually with its PaymentAttempt history. Both endpoints are bearer +
- * ownership-checked against the target's owning Subscription (ADR-0003); {@link
- * InvoiceService} is what turns a rejection into {@code 403}, never {@code 404} — see
- * its Javadoc.
+ * A subscriber's own billing history: listing a Subscription's Invoices, fetching one
+ * individually with its PaymentAttempt history, and downloading its PDF receipt. All
+ * three endpoints are bearer + ownership-checked against the target's owning
+ * Subscription (ADR-0003); {@link InvoiceService}/{@link ReceiptService} are what turn a
+ * rejection into {@code 403}, never {@code 404} — see their Javadoc.
  */
 @RestController
 public class InvoiceController {
@@ -25,10 +29,12 @@ public class InvoiceController {
     private static final int MAX_PAGE_SIZE = 100;
 
     private final InvoiceService invoiceService;
+    private final ReceiptService receiptService;
 
     @Autowired
-    public InvoiceController(InvoiceService invoiceService) {
+    public InvoiceController(InvoiceService invoiceService, ReceiptService receiptService) {
         this.invoiceService = invoiceService;
+        this.receiptService = receiptService;
     }
 
     @GetMapping("/api/v1/subscriptions/{id}/invoices")
@@ -44,6 +50,16 @@ public class InvoiceController {
     public InvoiceResponse getOne(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
         UUID authenticatedCustomerId = UUID.fromString(jwt.getSubject());
         return InvoiceResponse.from(invoiceService.getById(id, authenticatedCustomerId));
+    }
+
+    @GetMapping("/api/v1/invoices/{id}/receipt")
+    public ResponseEntity<byte[]> getReceipt(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt) {
+        UUID authenticatedCustomerId = UUID.fromString(jwt.getSubject());
+        byte[] pdf = receiptService.getPdf(id, authenticatedCustomerId);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_PDF)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"invoice-" + id + "-receipt.pdf\"")
+                .body(pdf);
     }
 
     /** Falls back to {@link #DEFAULT_PAGE_SIZE} for anything blank, non-numeric, or below 1, rather than rejecting the request. */

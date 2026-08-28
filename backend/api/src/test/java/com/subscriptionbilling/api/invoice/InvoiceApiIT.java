@@ -21,6 +21,7 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -36,9 +37,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * endpoint returns the full PaymentAttempt history (one on the happy path, four after
  * Dunning exhausts), a later Plan price change never alters what an already-issued
  * Invoice reports (Invariant 9, the same read-path guarantee {@code
- * ReceiptRenderingServiceTest} proves for the PDF), and both endpoints enforce ownership
- * (403 for a different Customer's token, 401 unauthenticated) exactly like {@code
- * SubscriptionApiIT}.
+ * ReceiptRenderingServiceTest} proves for the PDF), the receipt-download endpoint serves
+ * the stored PDF for a paid Invoice and a structured {@code 409} for one still open or
+ * failed, and all three endpoints enforce ownership (403 for a different Customer's
+ * token, 401 unauthenticated) exactly like {@code SubscriptionApiIT}.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -167,6 +169,92 @@ class InvoiceApiIT extends AbstractPostgresIntegrationTest {
         assertThat(listBody.items()).singleElement()
                 .extracting(InvoiceSummaryResponse::amount).satisfies(amount ->
                         assertThat(amount).isEqualByComparingTo(originalAmount));
+    }
+
+    @Test
+    void downloadingTheReceiptForAPaidInvoiceReturnsThePdfWithTheCorrectContentType() {
+        SignupResponse owner = immediatePaidSignUp("receipt-happy-" + UUID.randomUUID() + "@example.com");
+        LocalDate billingPeriod = LocalDate.of(2026, 1, 10);
+        chargeForPeriod(owner.subscriptionId(), billingPeriod);
+        UUID invoiceId = invoiceRepository.findBySubscriptionIdAndBillingPeriod(owner.subscriptionId(), billingPeriod)
+                .orElseThrow().getId();
+
+        MvcTestResult result = mvc.get().uri("/api/v1/invoices/{id}/receipt", invoiceId)
+                .header("Authorization", "Bearer " + owner.accessToken())
+                .exchange();
+        assertThat(result).hasStatusOk();
+        assertThat(result.getResponse().getContentType()).isEqualTo(MediaType.APPLICATION_PDF_VALUE);
+        byte[] pdf = result.getMvcResult().getResponse().getContentAsByteArray();
+        assertThat(pdf).isNotEmpty();
+        assertThat(new String(pdf, 0, 5, StandardCharsets.US_ASCII)).isEqualTo("%PDF-");
+    }
+
+    @Test
+    void downloadingTheReceiptForAStillPendingInvoiceIsRejectedWithAStructuredErrorNotABrokenFile() {
+        SignupResponse owner = suspendViaRealDunningFlow("receipt-pending-" + UUID.randomUUID() + "@example.com");
+        UUID invoiceId = invoiceRepository
+                .findBySubscriptionIdAndBillingPeriod(owner.subscriptionId(), LocalDate.now(ZoneOffset.UTC))
+                .orElseThrow().getId();
+
+        mvc.get().uri("/api/v1/invoices/{id}/receipt", invoiceId)
+                .header("Authorization", "Bearer " + owner.accessToken())
+                .assertThat()
+                .hasStatus(409)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("RECEIPT_NOT_AVAILABLE");
+    }
+
+    @Test
+    void downloadingTheReceiptForAFailedInvoiceIsRejectedWithAStructuredErrorNotABrokenFile() {
+        SignupResponse owner = suspendViaRealDunningFlow("receipt-failed-" + UUID.randomUUID() + "@example.com");
+        forceDueToday(owner.subscriptionId());
+        billingJobRunner.run(); // day-1 retry fails -> retriesUsed=1
+        forceDueToday(owner.subscriptionId());
+        billingJobRunner.run(); // day-3 retry fails -> retriesUsed=2
+        forceDueToday(owner.subscriptionId());
+        billingJobRunner.run(); // day-7 retry fails -> retriesUsed=3, exhausted -> failed
+        UUID invoiceId = invoiceRepository
+                .findBySubscriptionIdAndBillingPeriod(owner.subscriptionId(), LocalDate.now(ZoneOffset.UTC))
+                .orElseThrow().getId();
+
+        mvc.get().uri("/api/v1/invoices/{id}/receipt", invoiceId)
+                .header("Authorization", "Bearer " + owner.accessToken())
+                .assertThat()
+                .hasStatus(409)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("RECEIPT_NOT_AVAILABLE");
+    }
+
+    @Test
+    void downloadingTheReceiptForAWrongOwnerIsRejectedWith403() {
+        SignupResponse owner = immediatePaidSignUp("receipt-victim-" + UUID.randomUUID() + "@example.com");
+        LocalDate billingPeriod = LocalDate.of(2026, 1, 15);
+        chargeForPeriod(owner.subscriptionId(), billingPeriod);
+        UUID invoiceId = invoiceRepository.findBySubscriptionIdAndBillingPeriod(owner.subscriptionId(), billingPeriod)
+                .orElseThrow().getId();
+        SignupResponse attacker = signUp("receipt-attacker-" + UUID.randomUUID() + "@example.com");
+
+        mvc.get().uri("/api/v1/invoices/{id}/receipt", invoiceId)
+                .header("Authorization", "Bearer " + attacker.accessToken())
+                .assertThat()
+                .hasStatus(403)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("FORBIDDEN");
+    }
+
+    @Test
+    void downloadingTheReceiptWithNoTokenIsRejectedWith401() {
+        SignupResponse owner = immediatePaidSignUp("receipt-noauth-" + UUID.randomUUID() + "@example.com");
+        LocalDate billingPeriod = LocalDate.of(2026, 1, 20);
+        chargeForPeriod(owner.subscriptionId(), billingPeriod);
+        UUID invoiceId = invoiceRepository.findBySubscriptionIdAndBillingPeriod(owner.subscriptionId(), billingPeriod)
+                .orElseThrow().getId();
+
+        mvc.get().uri("/api/v1/invoices/{id}/receipt", invoiceId)
+                .assertThat()
+                .hasStatus(401)
+                .bodyJson()
+                .extractingPath("$.error.code").asString().isEqualTo("UNAUTHORIZED");
     }
 
     @Test
