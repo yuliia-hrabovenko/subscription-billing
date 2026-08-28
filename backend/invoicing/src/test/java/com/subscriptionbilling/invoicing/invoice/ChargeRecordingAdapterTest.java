@@ -1,6 +1,7 @@
 package com.subscriptionbilling.invoicing.invoice;
 
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
+import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -26,8 +27,10 @@ import static org.mockito.Mockito.when;
  * subsequent one to the existing row, appends a PaymentAttempt with the outcome's status,
  * and translates a concurrent-create constraint violation into {@link
  * ChargeAlreadyRecordedException} rather than letting it surface raw or creating a
- * duplicate PaymentAttempt. Whether the {@code (subscription_id, billing_period)}
- * uniqueness constraint itself holds is covered by {@link InvoiceRepositoryTest}.
+ * duplicate PaymentAttempt. Also covers the Invoice status transitions it drives: {@code
+ * paid} on a successful charge, and {@code failed} once a recorded retry exhausts the
+ * bound. Whether the {@code (subscription_id, billing_period)} uniqueness constraint
+ * itself holds is covered by {@link InvoiceRepositoryTest}.
  */
 @ExtendWith(MockitoExtension.class)
 class ChargeRecordingAdapterTest {
@@ -57,6 +60,8 @@ class ChargeRecordingAdapterTest {
         assertThat(createdInvoice.getSubscriptionId()).isEqualTo(subscriptionId);
         assertThat(createdInvoice.getBillingPeriod()).isEqualTo(billingPeriod);
         assertThat(createdInvoice.getPriceVersionId()).isEqualTo(priceVersionId);
+        assertThat(createdInvoice.getStatus()).isEqualTo(InvoiceStatus.PAID);
+        verify(invoiceRepository).save(createdInvoice);
 
         ArgumentCaptor<PaymentAttempt> attemptCaptor = ArgumentCaptor.forClass(PaymentAttempt.class);
         verify(paymentAttemptRepository).save(attemptCaptor.capture());
@@ -79,6 +84,8 @@ class ChargeRecordingAdapterTest {
                 .recordSuccessfulCharge(subscriptionId, billingPeriod, existingInvoice.getPriceVersionId(), "gw-txn-2", attemptedAt);
 
         verify(invoiceRepository, never()).saveAndFlush(any());
+        assertThat(existingInvoice.getStatus()).isEqualTo(InvoiceStatus.PAID);
+        verify(invoiceRepository).save(existingInvoice);
         ArgumentCaptor<PaymentAttempt> attemptCaptor = ArgumentCaptor.forClass(PaymentAttempt.class);
         verify(paymentAttemptRepository).save(attemptCaptor.capture());
         assertThat(attemptCaptor.getValue().getInvoice()).isEqualTo(existingInvoice);
@@ -102,6 +109,8 @@ class ChargeRecordingAdapterTest {
         verify(invoiceRepository).saveAndFlush(invoiceCaptor.capture());
         Invoice createdInvoice = invoiceCaptor.getValue();
         assertThat(invoiceId).isEqualTo(createdInvoice.getId());
+        // Not yet terminal: a first failed attempt still awaits its Dunning retries.
+        assertThat(createdInvoice.getStatus()).isEqualTo(InvoiceStatus.OPEN);
 
         ArgumentCaptor<PaymentAttempt> attemptCaptor = ArgumentCaptor.forClass(PaymentAttempt.class);
         verify(paymentAttemptRepository).save(attemptCaptor.capture());
@@ -123,10 +132,43 @@ class ChargeRecordingAdapterTest {
 
         assertThat(invoiceId).isEqualTo(existingInvoice.getId());
         verify(invoiceRepository, never()).saveAndFlush(any());
+        assertThat(existingInvoice.getStatus()).isEqualTo(InvoiceStatus.OPEN);
         ArgumentCaptor<PaymentAttempt> attemptCaptor = ArgumentCaptor.forClass(PaymentAttempt.class);
         verify(paymentAttemptRepository).save(attemptCaptor.capture());
         assertThat(attemptCaptor.getValue().getInvoice()).isEqualTo(existingInvoice);
         assertThat(attemptCaptor.getValue().getStatus()).isEqualTo(PaymentAttemptStatus.FAILED);
+    }
+
+    @Test
+    void recordingARetryAttemptThatDoesNotExhaustTheBoundLeavesTheInvoiceOpen() {
+        UUID invoiceId = UUID.randomUUID();
+        Invoice invoice = new Invoice(invoiceId, UUID.randomUUID(), LocalDate.of(2026, 7, 31), UUID.randomUUID());
+        when(invoiceRepository.findById(invoiceId)).thenReturn(Optional.of(invoice));
+
+        DunningRetryState state = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository)
+                .recordRetryAttempt(invoiceId);
+
+        assertThat(state.retriesUsed()).isEqualTo(1);
+        assertThat(state.retriesExhausted()).isFalse();
+        assertThat(invoice.getStatus()).isEqualTo(InvoiceStatus.OPEN);
+        verify(invoiceRepository).saveAndFlush(invoice);
+    }
+
+    @Test
+    void recordingTheRetryAttemptThatExhaustsTheBoundMarksTheInvoiceFailed() {
+        UUID invoiceId = UUID.randomUUID();
+        Invoice invoice = new Invoice(invoiceId, UUID.randomUUID(), LocalDate.of(2026, 7, 31), UUID.randomUUID());
+        invoice.recordRetryAttempt();
+        invoice.recordRetryAttempt();
+        when(invoiceRepository.findById(invoiceId)).thenReturn(Optional.of(invoice));
+
+        DunningRetryState state = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository)
+                .recordRetryAttempt(invoiceId);
+
+        assertThat(state.retriesUsed()).isEqualTo(3);
+        assertThat(state.retriesExhausted()).isTrue();
+        assertThat(invoice.getStatus()).isEqualTo(InvoiceStatus.FAILED);
+        verify(invoiceRepository).saveAndFlush(invoice);
     }
 
     @Test

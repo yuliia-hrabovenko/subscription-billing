@@ -18,6 +18,7 @@ import com.subscriptionbilling.billingjob.BillingJobRunner;
 import com.subscriptionbilling.billingjob.anchor.AnchorDate;
 import com.subscriptionbilling.invoicing.invoice.Invoice;
 import com.subscriptionbilling.invoicing.invoice.InvoiceRepository;
+import com.subscriptionbilling.invoicing.invoice.InvoiceStatus;
 import com.subscriptionbilling.invoicing.invoice.PaymentAttempt;
 import com.subscriptionbilling.invoicing.invoice.PaymentAttemptRepository;
 import com.subscriptionbilling.invoicing.invoice.PaymentAttemptStatus;
@@ -119,6 +120,7 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
         Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod);
         assertThat(invoice).isPresent();
         assertThat(invoice.get().getPriceVersionId()).isEqualTo(currentPrice.getId());
+        assertThat(invoice.get().getStatus()).isEqualTo(InvoiceStatus.PAID);
 
         List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
         assertThat(attempts).singleElement().satisfies(attempt ->
@@ -200,6 +202,8 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
 
         Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod);
         assertThat(invoice).isPresent();
+        // Not yet terminal: a first failed attempt still awaits its Dunning retries.
+        assertThat(invoice.get().getStatus()).isEqualTo(InvoiceStatus.OPEN);
         List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
         assertThat(attempts).singleElement().satisfies(attempt ->
                 assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.FAILED));
@@ -239,6 +243,8 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
         Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod);
         assertThat(invoice).isPresent();
         assertThat(invoice.get().getRetriesUsed()).isEqualTo(3);
+        // Dunning exhaustion (the 3rd retry's failure) is what makes this terminal.
+        assertThat(invoice.get().getStatus()).isEqualTo(InvoiceStatus.FAILED);
         List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
         assertThat(attempts).hasSize(4);
         assertThat(attempts).allSatisfy(attempt -> assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.FAILED));
@@ -278,6 +284,7 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
 
         Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod);
         assertThat(invoice).isPresent();
+        assertThat(invoice.get().getStatus()).isEqualTo(InvoiceStatus.PAID);
         List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
         assertThat(attempts).hasSize(2);
         assertThat(attempts.get(0).getStatus()).isEqualTo(PaymentAttemptStatus.FAILED);
@@ -418,6 +425,7 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
 
         Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), today);
         assertThat(invoice).isPresent();
+        assertThat(invoice.get().getStatus()).isEqualTo(InvoiceStatus.PAID);
         List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
         assertThat(attempts).singleElement().satisfies(attempt ->
                 assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.SUCCEEDED));
@@ -447,6 +455,7 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
 
         Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), trialEndDate);
         assertThat(invoice).isPresent();
+        assertThat(invoice.get().getStatus()).isEqualTo(InvoiceStatus.OPEN);
         List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
         assertThat(attempts).singleElement().satisfies(attempt ->
                 assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.FAILED));
@@ -480,6 +489,7 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
         Optional<Invoice> invoice = invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscription.getId(), billingPeriod);
         assertThat(invoice).isPresent();
         assertThat(invoice.get().getPriceVersionId()).isEqualTo(enterprisePrice.getId());
+        assertThat(invoice.get().getStatus()).isEqualTo(InvoiceStatus.PAID);
         List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.get().getId());
         assertThat(attempts).singleElement().satisfies(attempt ->
                 assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.SUCCEEDED));

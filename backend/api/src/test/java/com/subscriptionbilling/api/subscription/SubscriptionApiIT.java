@@ -16,6 +16,7 @@ import com.subscriptionbilling.billingcore.subscription.SubscriptionState;
 import com.subscriptionbilling.billingjob.BillingJobRunner;
 import com.subscriptionbilling.invoicing.invoice.Invoice;
 import com.subscriptionbilling.invoicing.invoice.InvoiceRepository;
+import com.subscriptionbilling.invoicing.invoice.InvoiceStatus;
 import com.subscriptionbilling.invoicing.invoice.PaymentAttempt;
 import com.subscriptionbilling.invoicing.invoice.PaymentAttemptRepository;
 import com.subscriptionbilling.invoicing.invoice.PaymentAttemptStatus;
@@ -337,6 +338,15 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
                 .hasStatusOk()
                 .bodyJson()
                 .extractingPath("$.state").asString().isEqualTo("CANCELED");
+
+        // Fewer than the full 4-attempt retry bound was used (just the one initial
+        // failure) -- the direct cancellation ends the retry sequence early and still
+        // makes the still-open Invoice terminal failed immediately.
+        Invoice invoice = invoiceRepository
+                .findBySubscriptionIdAndBillingPeriod(owner.subscriptionId(), LocalDate.now(ZoneOffset.UTC))
+                .orElseThrow();
+        assertThat(invoice.getStatus()).isEqualTo(InvoiceStatus.FAILED);
+        assertThat(invoice.getRetriesUsed()).isZero();
     }
 
     @Test
@@ -634,6 +644,11 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
                 .assertThat()
                 .bodyJson()
                 .extractingPath("$.state").asString().isEqualTo("ACTIVE");
+
+        Invoice invoice = invoiceRepository
+                .findBySubscriptionIdAndBillingPeriod(owner.subscriptionId(), LocalDate.now(ZoneOffset.UTC))
+                .orElseThrow();
+        assertThat(invoice.getStatus()).isEqualTo(InvoiceStatus.PAID);
     }
 
     @Test
@@ -659,6 +674,7 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
                 .findBySubscriptionIdAndBillingPeriod(owner.subscriptionId(), LocalDate.now(ZoneOffset.UTC))
                 .orElseThrow();
         assertThat(invoice.getRetriesUsed()).isEqualTo(3);
+        assertThat(invoice.getStatus()).isEqualTo(InvoiceStatus.FAILED);
         List<PaymentAttempt> attempts = paymentAttemptRepository.findByInvoiceId(invoice.getId());
         assertThat(attempts).hasSize(4);
         assertThat(attempts).allSatisfy(attempt -> assertThat(attempt.getStatus()).isEqualTo(PaymentAttemptStatus.FAILED));

@@ -123,4 +123,24 @@ public class Invoice {
         }
         retriesUsed++;
     }
+
+    /**
+     * Transitions to {@link InvoiceStatus#PAID}: a Payment Attempt against this
+     * Invoice succeeded, whether the initial charge, a scheduled Dunning retry, or a
+     * self-service retry.
+     */
+    public void markPaid() {
+        status = InvoiceStatus.PAID;
+    }
+
+    /**
+     * Transitions to {@link InvoiceStatus#FAILED}: either every bounded retry Payment
+     * Attempt is now exhausted, or the Subscription was canceled directly while
+     * suspended before exhaustion, ending this Invoice's retry sequence early —
+     * terminal here means "no more attempts are coming," not strictly "every attempt
+     * was used."
+     */
+    public void markFailed() {
+        status = InvoiceStatus.FAILED;
+    }
 }
