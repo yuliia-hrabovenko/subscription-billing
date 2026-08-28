@@ -2,6 +2,7 @@ package com.subscriptionbilling.invoicing.invoice;
 
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
+import com.subscriptionbilling.invoicing.receipt.ReceiptRenderingService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -19,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -41,6 +43,9 @@ class ChargeRecordingAdapterTest {
     @Mock
     private PaymentAttemptRepository paymentAttemptRepository;
 
+    @Mock
+    private ReceiptRenderingService receiptRenderingService;
+
     @Test
     void createsANewInvoiceAndASucceededPaymentAttemptWhenNoInvoiceExistsYetForTheCycle() {
         UUID subscriptionId = UUID.randomUUID();
@@ -51,7 +56,7 @@ class ChargeRecordingAdapterTest {
                 .thenReturn(Optional.empty());
         when(invoiceRepository.saveAndFlush(any(Invoice.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository)
+        new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService)
                 .recordSuccessfulCharge(subscriptionId, billingPeriod, priceVersionId, "gw-txn-1", attemptedAt);
 
         ArgumentCaptor<Invoice> invoiceCaptor = ArgumentCaptor.forClass(Invoice.class);
@@ -69,6 +74,7 @@ class ChargeRecordingAdapterTest {
         assertThat(createdAttempt.getStatus()).isEqualTo(PaymentAttemptStatus.SUCCEEDED);
         assertThat(createdAttempt.getAttemptedAt()).isEqualTo(attemptedAt);
         assertThat(createdAttempt.getInvoice()).isEqualTo(createdInvoice);
+        verify(receiptRenderingService).renderAndStore(createdInvoice, attemptedAt);
     }
 
     @Test
@@ -80,7 +86,7 @@ class ChargeRecordingAdapterTest {
         when(invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod))
                 .thenReturn(Optional.of(existingInvoice));
 
-        new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository)
+        new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService)
                 .recordSuccessfulCharge(subscriptionId, billingPeriod, existingInvoice.getPriceVersionId(), "gw-txn-2", attemptedAt);
 
         verify(invoiceRepository, never()).saveAndFlush(any());
@@ -90,6 +96,7 @@ class ChargeRecordingAdapterTest {
         verify(paymentAttemptRepository).save(attemptCaptor.capture());
         assertThat(attemptCaptor.getValue().getInvoice()).isEqualTo(existingInvoice);
         assertThat(attemptCaptor.getValue().getStatus()).isEqualTo(PaymentAttemptStatus.SUCCEEDED);
+        verify(receiptRenderingService).renderAndStore(existingInvoice, attemptedAt);
     }
 
     @Test
@@ -102,7 +109,7 @@ class ChargeRecordingAdapterTest {
                 .thenReturn(Optional.empty());
         when(invoiceRepository.saveAndFlush(any(Invoice.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository)
+        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService)
                 .recordFailedCharge(subscriptionId, billingPeriod, priceVersionId, attemptedAt);
 
         ArgumentCaptor<Invoice> invoiceCaptor = ArgumentCaptor.forClass(Invoice.class);
@@ -116,6 +123,7 @@ class ChargeRecordingAdapterTest {
         verify(paymentAttemptRepository).save(attemptCaptor.capture());
         assertThat(attemptCaptor.getValue().getStatus()).isEqualTo(PaymentAttemptStatus.FAILED);
         assertThat(attemptCaptor.getValue().getInvoice()).isEqualTo(createdInvoice);
+        verifyNoInteractions(receiptRenderingService);
     }
 
     @Test
@@ -127,7 +135,7 @@ class ChargeRecordingAdapterTest {
         when(invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod))
                 .thenReturn(Optional.of(existingInvoice));
 
-        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository)
+        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService)
                 .recordFailedCharge(subscriptionId, billingPeriod, existingInvoice.getPriceVersionId(), attemptedAt);
 
         assertThat(invoiceId).isEqualTo(existingInvoice.getId());
@@ -137,6 +145,7 @@ class ChargeRecordingAdapterTest {
         verify(paymentAttemptRepository).save(attemptCaptor.capture());
         assertThat(attemptCaptor.getValue().getInvoice()).isEqualTo(existingInvoice);
         assertThat(attemptCaptor.getValue().getStatus()).isEqualTo(PaymentAttemptStatus.FAILED);
+        verifyNoInteractions(receiptRenderingService);
     }
 
     @Test
@@ -145,13 +154,14 @@ class ChargeRecordingAdapterTest {
         Invoice invoice = new Invoice(invoiceId, UUID.randomUUID(), LocalDate.of(2026, 7, 31), UUID.randomUUID());
         when(invoiceRepository.findById(invoiceId)).thenReturn(Optional.of(invoice));
 
-        DunningRetryState state = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository)
+        DunningRetryState state = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService)
                 .recordRetryAttempt(invoiceId);
 
         assertThat(state.retriesUsed()).isEqualTo(1);
         assertThat(state.retriesExhausted()).isFalse();
         assertThat(invoice.getStatus()).isEqualTo(InvoiceStatus.OPEN);
         verify(invoiceRepository).saveAndFlush(invoice);
+        verifyNoInteractions(receiptRenderingService);
     }
 
     @Test
@@ -162,13 +172,14 @@ class ChargeRecordingAdapterTest {
         invoice.recordRetryAttempt();
         when(invoiceRepository.findById(invoiceId)).thenReturn(Optional.of(invoice));
 
-        DunningRetryState state = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository)
+        DunningRetryState state = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService)
                 .recordRetryAttempt(invoiceId);
 
         assertThat(state.retriesUsed()).isEqualTo(3);
         assertThat(state.retriesExhausted()).isTrue();
         assertThat(invoice.getStatus()).isEqualTo(InvoiceStatus.FAILED);
         verify(invoiceRepository).saveAndFlush(invoice);
+        verifyNoInteractions(receiptRenderingService);
     }
 
     @Test
@@ -177,7 +188,7 @@ class ChargeRecordingAdapterTest {
         LocalDate billingPeriod = LocalDate.of(2026, 7, 31);
         when(invoiceRepository.existsBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod)).thenReturn(true);
 
-        boolean alreadyRecorded = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository)
+        boolean alreadyRecorded = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService)
                 .invoiceAlreadyRecorded(subscriptionId, billingPeriod);
 
         assertThat(alreadyRecorded).isTrue();
@@ -193,7 +204,7 @@ class ChargeRecordingAdapterTest {
         when(invoiceRepository.saveAndFlush(any(Invoice.class)))
                 .thenThrow(new DataIntegrityViolationException("uq_invoice_subscription_billing_period"));
 
-        ChargeRecordingAdapter adapter = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository);
+        ChargeRecordingAdapter adapter = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService);
 
         assertThatThrownBy(() -> adapter.recordSuccessfulCharge(
                 subscriptionId, billingPeriod, UUID.randomUUID(), "gw-txn-1", attemptedAt))
@@ -211,7 +222,7 @@ class ChargeRecordingAdapterTest {
         when(invoiceRepository.saveAndFlush(any(Invoice.class)))
                 .thenThrow(new DataIntegrityViolationException("uq_invoice_subscription_billing_period"));
 
-        ChargeRecordingAdapter adapter = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository);
+        ChargeRecordingAdapter adapter = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService);
 
         assertThatThrownBy(() -> adapter.recordFailedCharge(subscriptionId, billingPeriod, UUID.randomUUID(), attemptedAt))
                 .isInstanceOf(ChargeAlreadyRecordedException.class);

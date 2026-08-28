@@ -3,6 +3,7 @@ package com.subscriptionbilling.invoicing.invoice;
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
 import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
+import com.subscriptionbilling.invoicing.receipt.ReceiptRenderingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -23,7 +24,10 @@ import java.util.UUID;
  * instances both racing to create the same Invoice; losing that race surfaces as {@link
  * ChargeAlreadyRecordedException} rather than a duplicate row or a raw {@link
  * DataIntegrityViolationException}. Also drives the Invoice's terminal status: a success
- * marks it {@code paid}; a retry that exhausts the bound marks it {@code failed}.
+ * marks it {@code paid}; a retry that exhausts the bound marks it {@code failed}. A
+ * success also triggers the Invoice's receipt rendering, in the same transaction as the
+ * {@code paid} transition, so a receipt exists for every paid Invoice with no separate
+ * trigger required.
  */
 @Component
 public class ChargeRecordingAdapter implements ChargeRecordingPort {
@@ -32,10 +36,13 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
 
     private final InvoiceRepository invoiceRepository;
     private final PaymentAttemptRepository paymentAttemptRepository;
+    private final ReceiptRenderingService receiptRenderingService;
 
-    public ChargeRecordingAdapter(InvoiceRepository invoiceRepository, PaymentAttemptRepository paymentAttemptRepository) {
+    public ChargeRecordingAdapter(InvoiceRepository invoiceRepository, PaymentAttemptRepository paymentAttemptRepository,
+                                   ReceiptRenderingService receiptRenderingService) {
         this.invoiceRepository = invoiceRepository;
         this.paymentAttemptRepository = paymentAttemptRepository;
+        this.receiptRenderingService = receiptRenderingService;
     }
 
     @Override
@@ -53,6 +60,7 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
                 new PaymentAttempt(UUID.randomUUID(), invoice, PaymentAttemptStatus.SUCCEEDED, attemptedAt));
         invoice.markPaid();
         invoiceRepository.save(invoice);
+        receiptRenderingService.renderAndStore(invoice, attemptedAt);
         log.info("Charge succeeded for subscription {} billing period {}: invoice {}, gateway transaction {}",
                 subscriptionId, billingPeriod, invoice.getId(), gatewayTransactionId);
     }
