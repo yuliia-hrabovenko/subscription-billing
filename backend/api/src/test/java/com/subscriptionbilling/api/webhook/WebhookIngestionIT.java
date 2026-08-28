@@ -2,6 +2,14 @@ package com.subscriptionbilling.api.webhook;
 
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
 import com.subscriptionbilling.api.support.CountingPaymentGatewayClient;
+import com.subscriptionbilling.audit.AuditLogEntryRepository;
+import com.subscriptionbilling.billingcore.customer.Customer;
+import com.subscriptionbilling.billingcore.customer.CustomerRepository;
+import com.subscriptionbilling.billingcore.plan.Plan;
+import com.subscriptionbilling.billingcore.plan.PlanRepository;
+import com.subscriptionbilling.billingcore.subscription.Subscription;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionRepository;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionState;
 import com.subscriptionbilling.webhooks.dedupe.WebhookEventRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -19,8 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Exercises {@code POST /api/v1/webhooks/gateway} end to end against a real Postgres
  * instance: an invalid signature never reaches the dedupe table, a validly-signed
  * malformed/unrecognized payload is rejected only after signature verification, a
- * redelivered event is a provable no-op, the endpoint needs no bearer token, and all
- * four outcome metrics increment for their respective scenario.
+ * redelivered event is a provable no-op, the endpoint needs no bearer token, all four
+ * outcome metrics increment for their respective scenario, and a dispute event actually
+ * cancels the targeted Subscription exactly once even when redelivered.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -37,6 +46,18 @@ class WebhookIngestionIT extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private MeterRegistry meterRegistry;
+
+    @Autowired
+    private CustomerRepository customerRepository;
+
+    @Autowired
+    private PlanRepository planRepository;
+
+    @Autowired
+    private SubscriptionRepository subscriptionRepository;
+
+    @Autowired
+    private AuditLogEntryRepository auditLogEntryRepository;
 
     @Test
     void anInvalidSignatureRequestIsRejectedBeforeAnyDedupeTableWriteWithAStructuredError() {
@@ -156,13 +177,54 @@ class WebhookIngestionIT extends AbstractPostgresIntegrationTest {
         assertThat(counter("webhook_ingestion_rejected_malformed_total")).isEqualTo(rejectedMalformedBefore + 1);
     }
 
+    @Test
+    void aRedeliveredDisputeEventCancelsTheTargetSubscriptionExactlyOnceWithExactlyOneAuditLogEntry() {
+        UUID subscriptionId = seedActiveSubscription();
+        String eventId = "evt_" + UUID.randomUUID();
+        String payload = disputePayload(eventId, subscriptionId);
+
+        mvc.post().uri("/api/v1/webhooks/gateway")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header(SIGNATURE_HEADER_NAME, VALID_SIGNATURE)
+                .content(payload)
+                .assertThat().hasStatusOk();
+
+        mvc.post().uri("/api/v1/webhooks/gateway")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header(SIGNATURE_HEADER_NAME, VALID_SIGNATURE)
+                .content(payload)
+                .assertThat().hasStatusOk();
+
+        assertThat(subscriptionRepository.findById(subscriptionId).orElseThrow().getState())
+                .isEqualTo(SubscriptionState.CANCELED);
+        assertThat(auditLogEntryRepository.findBySubscriptionId(subscriptionId)).hasSize(1);
+    }
+
     private double counter(String name) {
         return meterRegistry.get(name).counter().count();
     }
 
+    /**
+     * Every scenario above just needs a well-formed, dispatchable dispute payload — a
+     * fresh {@code active} Subscription per call keeps each test's target independent of
+     * every other test's.
+     */
     private String disputePayload(String eventId) {
+        return disputePayload(eventId, seedActiveSubscription());
+    }
+
+    private String disputePayload(String eventId, UUID subscriptionId) {
         return """
-                {"id":"%s","type":"charge.dispute.created","data":{"object":{"id":"dp_1"}}}
-                """.formatted(eventId);
+                {"id":"%s","type":"charge.dispute.created","data":{"object":{"id":"dp_1","metadata":{"subscription_id":"%s"}}}}
+                """.formatted(eventId, subscriptionId);
+    }
+
+    private UUID seedActiveSubscription() {
+        Customer customer = customerRepository.saveAndFlush(
+                new Customer(UUID.randomUUID(), "dispute-" + UUID.randomUUID() + "@example.com"));
+        Plan plan = planRepository.findByCode("free").orElseThrow();
+        Subscription subscription = subscriptionRepository.saveAndFlush(
+                new Subscription(UUID.randomUUID(), customer, plan, SubscriptionState.ACTIVE));
+        return subscription.getId();
     }
 }
