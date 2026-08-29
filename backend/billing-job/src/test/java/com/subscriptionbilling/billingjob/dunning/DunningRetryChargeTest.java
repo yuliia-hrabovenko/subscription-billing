@@ -4,6 +4,7 @@ import com.subscriptionbilling.billingjob.anchor.BillingCycleAdvancePort;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
+import com.subscriptionbilling.billingjob.invoicing.ChargeOutcomeApplier;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
 import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
 import org.junit.jupiter.api.Test;
@@ -45,7 +46,9 @@ class DunningRetryChargeTest {
     private DunningHandoff dunningHandoff;
 
     private DunningRetryCharge charge() {
-        return new DunningRetryCharge(paymentGatewayClient, chargeRecordingPort, billingCycleAdvancePort, dunningHandoff);
+        ChargeOutcomeApplier chargeOutcomeApplier =
+                new ChargeOutcomeApplier(chargeRecordingPort, billingCycleAdvancePort, dunningHandoff);
+        return new DunningRetryCharge(paymentGatewayClient, chargeOutcomeApplier);
     }
 
     private ChargeableSubscription retryChargeable(UUID subscriptionId) {
@@ -77,7 +80,7 @@ class DunningRetryChargeTest {
         DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 1, false);
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
-                chargeable.priceVersionId(), ATTEMPTED_AT)).thenReturn(invoiceId);
+                chargeable.priceVersionId(), null, ATTEMPTED_AT)).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
         when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, ATTEMPTED_AT))
                 .thenReturn(DunningRetryOutcome.RESCHEDULED);
@@ -95,7 +98,7 @@ class DunningRetryChargeTest {
         ChargeableSubscription chargeable = retryChargeable(subscriptionId);
         DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 3, true);
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
-        when(chargeRecordingPort.recordFailedCharge(any(), any(), any(), any())).thenReturn(invoiceId);
+        when(chargeRecordingPort.recordFailedCharge(any(), any(), any(), any(), any())).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
         when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, ATTEMPTED_AT))
                 .thenReturn(DunningRetryOutcome.CANCELED);
@@ -114,7 +117,7 @@ class DunningRetryChargeTest {
         DunningRetryChargeResult result = charge().attempt(subscriptionId, chargeable, ATTEMPTED_AT);
 
         assertThat(result).isEqualTo(new DunningRetryChargeResult.FailedTransiently("gateway_timeout"));
-        verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any());
+        verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any(), any());
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
         verify(dunningHandoff, never()).onRetryFailed(any(), any(), any(), any());
     }

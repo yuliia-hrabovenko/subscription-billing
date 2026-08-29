@@ -37,6 +37,9 @@ public class PaymentAttempt {
     @Column(name = "attempted_at", nullable = false)
     private Instant attemptedAt;
 
+    @Column(name = "gateway_reference")
+    private String gatewayReference;
+
     protected PaymentAttempt() {
     }
 
@@ -47,10 +50,26 @@ public class PaymentAttempt {
      * @param attemptedAt the instant the gateway resolved this try
      */
     public PaymentAttempt(UUID id, Invoice invoice, PaymentAttemptStatus status, Instant attemptedAt) {
+        this(id, invoice, status, attemptedAt, null);
+    }
+
+    /**
+     * @param id               the PaymentAttempt's identity
+     * @param invoice          the Invoice this charge try was made against
+     * @param status           the gateway's resolved outcome for this try
+     * @param attemptedAt      the instant the gateway resolved this try
+     * @param gatewayReference the gateway's reference for this try, or null if the
+     *                         gateway didn't supply one — the correlation key a
+     *                         payment-succeeded/failed webhook event uses to find this
+     *                         attempt
+     */
+    public PaymentAttempt(UUID id, Invoice invoice, PaymentAttemptStatus status, Instant attemptedAt,
+                           String gatewayReference) {
         this.id = id;
         this.invoice = invoice;
         this.status = status;
         this.attemptedAt = attemptedAt;
+        this.gatewayReference = gatewayReference;
     }
 
     public UUID getId() {
@@ -67,5 +86,9 @@ public class PaymentAttempt {
 
     public Instant getAttemptedAt() {
         return attemptedAt;
+    }
+
+    public String getGatewayReference() {
+        return gatewayReference;
     }
 }

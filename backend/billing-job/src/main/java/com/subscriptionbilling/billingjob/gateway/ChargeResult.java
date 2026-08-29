@@ -13,8 +13,17 @@ public sealed interface ChargeResult {
     record Succeeded(String gatewayTransactionId) implements ChargeResult {
     }
 
-    /** @param reason the gateway's stated reason the card was declined */
-    record Declined(String reason) implements ChargeResult {
+    /**
+     * @param reason           the gateway's stated reason the card was declined
+     * @param gatewayReference the gateway's reference for the declined charge attempt,
+     *                         or null if the gateway didn't supply one
+     */
+    record Declined(String reason, String gatewayReference) implements ChargeResult {
+
+        /** Convenience constructor for a decline with no gateway reference available. */
+        public Declined(String reason) {
+            this(reason, null);
+        }
     }
 
     /** @param reason the gateway- or network-side condition that prevented a result (timeout, 5xx, ...) */

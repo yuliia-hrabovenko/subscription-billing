@@ -10,8 +10,9 @@ import java.util.UUID;
 /**
  * Routes a dispute-opened event to {@link DisputeCancellationPort#cancelForDispute},
  * resolving the Subscription identity from {@code data.object.metadata.subscription_id}.
- * Every other recognized event type falls through to a {@link NoOpWebhookEventDispatcher}
- * — no handler is wired up for payment success/failure yet.
+ * Every other recognized event type falls through to {@code fallback} — see {@link
+ * WebhooksAutoConfiguration} for how this composes with the dispatchers for other event
+ * types.
  */
 public class DisputeWebhookEventDispatcher implements WebhookEventDispatcher {
 
@@ -20,10 +21,19 @@ public class DisputeWebhookEventDispatcher implements WebhookEventDispatcher {
     private static final String SUBSCRIPTION_ID_FIELD = "subscription_id";
 
     private final DisputeCancellationPort disputeCancellationPort;
-    private final WebhookEventDispatcher fallback = new NoOpWebhookEventDispatcher();
+    private final WebhookEventDispatcher fallback;
 
     public DisputeWebhookEventDispatcher(DisputeCancellationPort disputeCancellationPort) {
+        this(disputeCancellationPort, new NoOpWebhookEventDispatcher());
+    }
+
+    /**
+     * @param fallback where every non-dispute event type is routed, so this dispatcher
+     *                 can be composed with others handling different event types
+     */
+    public DisputeWebhookEventDispatcher(DisputeCancellationPort disputeCancellationPort, WebhookEventDispatcher fallback) {
         this.disputeCancellationPort = disputeCancellationPort;
+        this.fallback = fallback;
     }
 
     @Override

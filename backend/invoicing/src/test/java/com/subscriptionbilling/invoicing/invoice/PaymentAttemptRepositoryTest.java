@@ -55,4 +55,25 @@ class PaymentAttemptRepositoryTest extends AbstractPostgresIntegrationTest {
 
         assertThat(attempts).extracting(PaymentAttempt::getId).containsExactly(initial.getId(), retry.getId());
     }
+
+    @Test
+    void findsAPaymentAttemptByItsGatewayReference() {
+        Invoice invoice = invoiceRepository.saveAndFlush(
+                new Invoice(UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2027, 5, 31), UUID.randomUUID()));
+        PaymentAttempt attempt = new PaymentAttempt(
+                UUID.randomUUID(), invoice, PaymentAttemptStatus.SUCCEEDED, Instant.now(), "gw-txn-lookup-1");
+        paymentAttemptRepository.saveAndFlush(attempt);
+
+        Optional<PaymentAttempt> found = paymentAttemptRepository.findFirstByGatewayReference("gw-txn-lookup-1");
+
+        assertThat(found).isPresent();
+        assertThat(found.get().getId()).isEqualTo(attempt.getId());
+    }
+
+    @Test
+    void findByGatewayReferenceReturnsEmptyWhenNoAttemptCarriesIt() {
+        Optional<PaymentAttempt> found = paymentAttemptRepository.findFirstByGatewayReference("gw-does-not-exist");
+
+        assertThat(found).isEmpty();
+    }
 }
