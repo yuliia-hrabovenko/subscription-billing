@@ -1,17 +1,15 @@
 package com.subscriptionbilling.billingjob;
 
-import com.subscriptionbilling.billingjob.anchor.AnchorDate;
-import com.subscriptionbilling.billingjob.anchor.BillingCycleAdvancePort;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.due.DueSubscriptionsPort;
-import com.subscriptionbilling.billingjob.dunning.DunningHandoff;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryChargeResult;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
+import com.subscriptionbilling.billingjob.invoicing.ChargeOutcomeApplier;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
 import com.subscriptionbilling.billingjob.planchange.PendingPlanChangeOutcome;
 import com.subscriptionbilling.billingjob.planchange.PendingPlanChangePort;
@@ -42,16 +40,17 @@ import java.util.UUID;
  * Subscription — see {@link ChargeableSubscription#dunningRetry()}), which decides which
  * outcome handling below applies; a non-retry Subscription already invoiced for this
  * Billing Cycle is skipped rather than charged again. Either way the charge goes through
- * {@link PaymentGatewayClient}:
+ * {@link PaymentGatewayClient}, and the resolved outcome is applied via {@link
+ * ChargeOutcomeApplier} — the same component a payment-succeeded/failed webhook's
+ * reconciliation calls into, so this job and that backstop never record different
+ * bookkeeping for the same outcome:
  * <ul>
- *     <li>Success: records the Invoice/PaymentAttempt via {@link ChargeRecordingPort} and
- *     advances {@code due_date} via {@link BillingCycleAdvancePort} using {@link
- *     AnchorDate}'s clamping rule — for a Dunning retry this same call also restores the
- *     Subscription to {@code active} (see {@link
- *     com.subscriptionbilling.billingjob.anchor.BillingCycleAdvancePort}'s contract).
- *     <li>Decline (not a retry): records a failed PaymentAttempt and hands off to {@link
- *     DunningHandoff#onChargeFailed}, which suspends the Subscription and schedules its
- *     day-1 retry; the Anchor Date and {@code due_date} are left unchanged.
+ *     <li>Success: {@link ChargeOutcomeApplier#applySuccess} records the Invoice/PaymentAttempt
+ *     and advances {@code due_date} — for a Dunning retry this same call also restores the
+ *     Subscription to {@code active}.
+ *     <li>Decline (not a retry): {@link ChargeOutcomeApplier#applyFirstFailure} records a
+ *     failed PaymentAttempt and suspends the Subscription, scheduling its day-1 retry; the
+ *     Anchor Date and {@code due_date} are left unchanged.
  * </ul>
  *
  * <p>A due Dunning retry is instead driven entirely through {@link DunningRetryCharge#attempt},
@@ -72,9 +71,8 @@ public class BillingJobRunner {
     private final ChargeableSubscriptionPort chargeableSubscriptionPort;
     private final PaymentGatewayClient paymentGatewayClient;
     private final ChargeRecordingPort chargeRecordingPort;
-    private final BillingCycleAdvancePort billingCycleAdvancePort;
-    private final DunningHandoff dunningHandoff;
     private final DunningRetryCharge dunningRetryCharge;
+    private final ChargeOutcomeApplier chargeOutcomeApplier;
     private final Clock clock;
     private final Timer jobDuration;
     private final Counter subscriptionsProcessed;
@@ -91,13 +89,11 @@ public class BillingJobRunner {
                              ChargeableSubscriptionPort chargeableSubscriptionPort,
                              PaymentGatewayClient paymentGatewayClient,
                              ChargeRecordingPort chargeRecordingPort,
-                             BillingCycleAdvancePort billingCycleAdvancePort,
-                             DunningHandoff dunningHandoff,
                              DunningRetryCharge dunningRetryCharge,
+                             ChargeOutcomeApplier chargeOutcomeApplier,
                              MeterRegistry meterRegistry) {
         this(dueSubscriptionsPort, pendingPlanChangePort, chargeableSubscriptionPort, paymentGatewayClient,
-                chargeRecordingPort, billingCycleAdvancePort, dunningHandoff, dunningRetryCharge, meterRegistry,
-                Clock.systemUTC());
+                chargeRecordingPort, dunningRetryCharge, chargeOutcomeApplier, meterRegistry, Clock.systemUTC());
     }
 
     BillingJobRunner(DueSubscriptionsPort dueSubscriptionsPort,
@@ -105,9 +101,8 @@ public class BillingJobRunner {
                       ChargeableSubscriptionPort chargeableSubscriptionPort,
                       PaymentGatewayClient paymentGatewayClient,
                       ChargeRecordingPort chargeRecordingPort,
-                      BillingCycleAdvancePort billingCycleAdvancePort,
-                      DunningHandoff dunningHandoff,
                       DunningRetryCharge dunningRetryCharge,
+                      ChargeOutcomeApplier chargeOutcomeApplier,
                       MeterRegistry meterRegistry,
                       Clock clock) {
         this.dueSubscriptionsPort = dueSubscriptionsPort;
@@ -115,9 +110,8 @@ public class BillingJobRunner {
         this.chargeableSubscriptionPort = chargeableSubscriptionPort;
         this.paymentGatewayClient = paymentGatewayClient;
         this.chargeRecordingPort = chargeRecordingPort;
-        this.billingCycleAdvancePort = billingCycleAdvancePort;
-        this.dunningHandoff = dunningHandoff;
         this.dunningRetryCharge = dunningRetryCharge;
+        this.chargeOutcomeApplier = chargeOutcomeApplier;
         this.clock = clock;
         this.jobDuration = Timer.builder("billing_job_duration_seconds")
                 .description("Wall-clock duration of a single BillingJobRunner#run execution")
@@ -222,19 +216,13 @@ public class BillingJobRunner {
 
     private void handleSuccess(UUID subscriptionId, ChargeableSubscription chargeable,
                                 ChargeResult.Succeeded succeeded, Instant attemptedAt) {
-        chargeRecordingPort.recordSuccessfulCharge(subscriptionId, chargeable.billingPeriod(),
-                chargeable.priceVersionId(), succeeded.gatewayTransactionId(), attemptedAt);
-
-        LocalDate nextDueDate = new AnchorDate(chargeable.anchorDayOfMonth()).next(chargeable.billingPeriod());
-        billingCycleAdvancePort.advanceDueDate(subscriptionId, nextDueDate, succeeded.gatewayTransactionId());
+        chargeOutcomeApplier.applySuccess(subscriptionId, chargeable, succeeded.gatewayTransactionId(), attemptedAt);
         subscriptionsProcessed.increment();
     }
 
     private void handleDecline(UUID subscriptionId, ChargeableSubscription chargeable,
                                 ChargeResult.Declined declined, Instant attemptedAt) {
-        UUID invoiceId = chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
-                chargeable.priceVersionId(), attemptedAt);
-        dunningHandoff.onChargeFailed(subscriptionId, invoiceId, chargeable.billingPeriod(), attemptedAt);
+        chargeOutcomeApplier.applyFirstFailure(subscriptionId, chargeable, declined.gatewayReference(), attemptedAt);
         declinedCharges.increment();
         log.info("Charge declined for subscription {}: {}", subscriptionId, declined.reason());
     }

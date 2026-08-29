@@ -230,8 +230,9 @@ public class StripePaymentGatewayClient implements PaymentGatewayClient {
         String reason = errorCode.isEmpty() ? (errorType.isEmpty() ? "unknown_error" : errorType) : errorCode;
 
         if (CARD_ERROR_TYPE.equals(errorType)) {
-            log.info("Stripe charge declined: reason={}", reason);
-            return new ChargeResult.Declined(reason);
+            String gatewayReference = body.path("error").path("charge").asText(null);
+            log.info("Stripe charge declined: reason={} gatewayReference={}", reason, gatewayReference);
+            return new ChargeResult.Declined(reason, gatewayReference);
         }
         log.warn("Stripe charge failed: status={} reason={}", response.statusCode(), reason);
         return new ChargeResult.FailedTransiently(reason);

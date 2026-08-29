@@ -13,6 +13,7 @@ import com.subscriptionbilling.billingcore.subscription.SubscriptionNotSuspended
 import com.subscriptionbilling.invoicing.invoice.InvalidCursorException;
 import com.subscriptionbilling.invoicing.invoice.InvoiceAccessDeniedException;
 import com.subscriptionbilling.invoicing.receipt.ReceiptNotAvailableException;
+import com.subscriptionbilling.webhooks.ingestion.ConflictingPaymentOutcomeException;
 import com.subscriptionbilling.webhooks.ingestion.InvalidWebhookSignatureException;
 import com.subscriptionbilling.webhooks.ingestion.MalformedWebhookPayloadException;
 import org.slf4j.Logger;
@@ -189,6 +190,19 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(MalformedWebhookPayloadException.class)
     public ResponseEntity<Object> handleMalformedWebhookPayload(MalformedWebhookPayloadException ex) {
         return respond(HttpStatus.BAD_REQUEST, "MALFORMED_WEBHOOK_PAYLOAD", ex.getMessage());
+    }
+
+    /**
+     * A payment-succeeded/failed webhook event reports an outcome that conflicts with
+     * one already recorded for the same gateway reference — a gateway data
+     * inconsistency worth surfacing distinctly, logged at WARN, never silently
+     * overwritten.
+     */
+    @ExceptionHandler(ConflictingPaymentOutcomeException.class)
+    public ResponseEntity<Object> handleConflictingPaymentOutcome(ConflictingPaymentOutcomeException ex) {
+        log.warn("Conflicting payment outcome reported by webhook [correlationId={}]: {}",
+                CorrelationIds.current(), ex.getMessage());
+        return respond(HttpStatus.CONFLICT, "CONFLICTING_PAYMENT_OUTCOME", ex.getMessage());
     }
 
     /**
