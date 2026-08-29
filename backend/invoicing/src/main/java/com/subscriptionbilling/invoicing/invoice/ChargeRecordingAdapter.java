@@ -3,6 +3,7 @@ package com.subscriptionbilling.invoicing.invoice;
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
 import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
+import com.subscriptionbilling.billingjob.invoicing.RecordedChargeOutcome;
 import com.subscriptionbilling.invoicing.receipt.ReceiptRenderingService;
 import com.subscriptionbilling.notifications.outbox.OutboxEvent;
 import com.subscriptionbilling.notifications.outbox.OutboxEventRepository;
@@ -14,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -63,8 +65,8 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
     public void recordSuccessfulCharge(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId,
                                         String gatewayTransactionId, Instant attemptedAt) {
         Invoice invoice = findOrCreateInvoice(subscriptionId, billingPeriod, priceVersionId);
-        paymentAttemptRepository.save(
-                new PaymentAttempt(UUID.randomUUID(), invoice, PaymentAttemptStatus.SUCCEEDED, attemptedAt));
+        paymentAttemptRepository.save(new PaymentAttempt(
+                UUID.randomUUID(), invoice, PaymentAttemptStatus.SUCCEEDED, attemptedAt, gatewayTransactionId));
         invoice.markPaid();
         invoiceRepository.save(invoice);
         receiptRenderingService.renderAndStore(invoice, attemptedAt);
@@ -77,10 +79,10 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
     @Override
     @Transactional
     public UUID recordFailedCharge(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId,
-                                    Instant attemptedAt) {
+                                    String gatewayReference, Instant attemptedAt) {
         Invoice invoice = findOrCreateInvoice(subscriptionId, billingPeriod, priceVersionId);
-        paymentAttemptRepository.save(
-                new PaymentAttempt(UUID.randomUUID(), invoice, PaymentAttemptStatus.FAILED, attemptedAt));
+        paymentAttemptRepository.save(new PaymentAttempt(
+                UUID.randomUUID(), invoice, PaymentAttemptStatus.FAILED, attemptedAt, gatewayReference));
         log.info("Charge declined for subscription {} billing period {}: invoice {}",
                 subscriptionId, billingPeriod, invoice.getId());
         return invoice.getId();
@@ -104,6 +106,14 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
                 + "\",\"billingPeriod\":\"" + billingPeriod + "\"}";
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<RecordedChargeOutcome> findRecordedOutcome(String gatewayReference) {
+        return paymentAttemptRepository.findFirstByGatewayReference(gatewayReference)
+                .map(attempt -> attempt.getStatus() == PaymentAttemptStatus.SUCCEEDED
+                        ? RecordedChargeOutcome.SUCCEEDED
+                        : RecordedChargeOutcome.FAILED);
+    }
     private Invoice findOrCreateInvoice(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId) {
         return invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod)
                 .orElseGet(() -> createInvoice(subscriptionId, billingPeriod, priceVersionId));

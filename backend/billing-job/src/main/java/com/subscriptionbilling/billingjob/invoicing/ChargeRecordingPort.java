@@ -2,6 +2,7 @@ package com.subscriptionbilling.billingjob.invoicing;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -48,16 +49,19 @@ public interface ChargeRecordingPort {
      * Invoice, per the "create on first attempt" rule — and appends a failed
      * PaymentAttempt to it.
      *
-     * @param subscriptionId the Subscription charged
-     * @param billingPeriod  the Billing Cycle date charged for
-     * @param priceVersionId the PriceVersion charged, snapshotted onto the Invoice
-     * @param attemptedAt    the instant the gateway resolved the charge
+     * @param subscriptionId   the Subscription charged
+     * @param billingPeriod    the Billing Cycle date charged for
+     * @param priceVersionId   the PriceVersion charged, snapshotted onto the Invoice
+     * @param gatewayReference the gateway's reference for the declined attempt, or null
+     *                         if the gateway didn't supply one
+     * @param attemptedAt      the instant the gateway resolved the charge
      * @return the id of the Invoice the failed attempt was recorded against, for the
      *         Dunning hand-off's correlation id
      * @throws ChargeAlreadyRecordedException if creating the Invoice lost a race to
      *         another job instance recording this same cycle concurrently
      */
-    UUID recordFailedCharge(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId, Instant attemptedAt);
+    UUID recordFailedCharge(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId,
+                             String gatewayReference, Instant attemptedAt);
 
     /**
      * Records that one more Dunning retry Payment Attempt has been made against the
@@ -69,4 +73,18 @@ public interface ChargeRecordingPort {
      * @return the Invoice's retry bookkeeping immediately after recording this attempt
      */
     DunningRetryState recordRetryAttempt(UUID invoiceId);
+
+    /**
+     * Looks up whether a PaymentAttempt carrying {@code gatewayReference} was already
+     * recorded by the synchronous charge path — the seam a payment-succeeded/failed
+     * webhook reconciles against so a sync-then-webhook race (the gateway resolving the
+     * charge, then also delivering a webhook reporting the same outcome) is a provable
+     * no-op rather than a second recording.
+     *
+     * @param gatewayReference the gateway's reference for the charge attempt being
+     *                         reconciled
+     * @return the already-recorded outcome, or empty if no PaymentAttempt carries this
+     *         reference
+     */
+    Optional<RecordedChargeOutcome> findRecordedOutcome(String gatewayReference);
 }

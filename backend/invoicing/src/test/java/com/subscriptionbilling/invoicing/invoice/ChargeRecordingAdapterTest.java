@@ -2,6 +2,7 @@ package com.subscriptionbilling.invoicing.invoice;
 
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
 import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
+import com.subscriptionbilling.billingjob.invoicing.RecordedChargeOutcome;
 import com.subscriptionbilling.invoicing.receipt.ReceiptRenderingService;
 import com.subscriptionbilling.notifications.outbox.OutboxEvent;
 import com.subscriptionbilling.notifications.outbox.OutboxEventRepository;
@@ -79,6 +80,7 @@ class ChargeRecordingAdapterTest {
         assertThat(createdAttempt.getStatus()).isEqualTo(PaymentAttemptStatus.SUCCEEDED);
         assertThat(createdAttempt.getAttemptedAt()).isEqualTo(attemptedAt);
         assertThat(createdAttempt.getInvoice()).isEqualTo(createdInvoice);
+        assertThat(createdAttempt.getGatewayReference()).isEqualTo("gw-txn-1");
         verify(receiptRenderingService).renderAndStore(createdInvoice, attemptedAt);
 
         ArgumentCaptor<OutboxEvent> outboxEventCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
@@ -124,8 +126,11 @@ class ChargeRecordingAdapterTest {
                 .thenReturn(Optional.empty());
         when(invoiceRepository.saveAndFlush(any(Invoice.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService, outboxEventRepository)
-                .recordFailedCharge(subscriptionId, billingPeriod, priceVersionId, attemptedAt);
+        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService)
+                .recordFailedCharge(subscriptionId, billingPeriod, priceVersionId, "gw-declined-1", attemptedAt);
+
+//        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService, outboxEventRepository)
+//                .recordFailedCharge(subscriptionId, billingPeriod, priceVersionId, attemptedAt);
 
         ArgumentCaptor<Invoice> invoiceCaptor = ArgumentCaptor.forClass(Invoice.class);
         verify(invoiceRepository).saveAndFlush(invoiceCaptor.capture());
@@ -138,6 +143,7 @@ class ChargeRecordingAdapterTest {
         verify(paymentAttemptRepository).save(attemptCaptor.capture());
         assertThat(attemptCaptor.getValue().getStatus()).isEqualTo(PaymentAttemptStatus.FAILED);
         assertThat(attemptCaptor.getValue().getInvoice()).isEqualTo(createdInvoice);
+        assertThat(attemptCaptor.getValue().getGatewayReference()).isEqualTo("gw-declined-1");
         verifyNoInteractions(receiptRenderingService);
         verifyNoInteractions(outboxEventRepository);
     }
@@ -151,6 +157,8 @@ class ChargeRecordingAdapterTest {
         when(invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod))
                 .thenReturn(Optional.of(existingInvoice));
 
+        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService)
+                .recordFailedCharge(subscriptionId, billingPeriod, existingInvoice.getPriceVersionId(), null, attemptedAt);
         UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService, outboxEventRepository)
                 .recordFailedCharge(subscriptionId, billingPeriod, existingInvoice.getPriceVersionId(), attemptedAt);
 
@@ -244,9 +252,48 @@ class ChargeRecordingAdapterTest {
 
         ChargeRecordingAdapter adapter = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService, outboxEventRepository);
 
-        assertThatThrownBy(() -> adapter.recordFailedCharge(subscriptionId, billingPeriod, UUID.randomUUID(), attemptedAt))
+        assertThatThrownBy(() -> adapter.recordFailedCharge(subscriptionId, billingPeriod, UUID.randomUUID(), null, attemptedAt))
                 .isInstanceOf(ChargeAlreadyRecordedException.class);
         verify(paymentAttemptRepository, never()).save(any());
         verifyNoInteractions(outboxEventRepository);
+    }
+
+    @Test
+    void findRecordedOutcomeReturnsEmptyWhenNoPaymentAttemptCarriesTheGatewayReference() {
+        when(paymentAttemptRepository.findFirstByGatewayReference("gw-unknown")).thenReturn(Optional.empty());
+
+        Optional<RecordedChargeOutcome> outcome = new ChargeRecordingAdapter(
+                invoiceRepository, paymentAttemptRepository, receiptRenderingService)
+                .findRecordedOutcome("gw-unknown");
+
+        assertThat(outcome).isEmpty();
+    }
+
+    @Test
+    void findRecordedOutcomeMapsASucceededPaymentAttemptToTheSucceededOutcome() {
+        Invoice invoice = new Invoice(UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 7, 31), UUID.randomUUID());
+        PaymentAttempt attempt = new PaymentAttempt(
+                UUID.randomUUID(), invoice, PaymentAttemptStatus.SUCCEEDED, Instant.now(), "gw-txn-1");
+        when(paymentAttemptRepository.findFirstByGatewayReference("gw-txn-1")).thenReturn(Optional.of(attempt));
+
+        Optional<RecordedChargeOutcome> outcome = new ChargeRecordingAdapter(
+                invoiceRepository, paymentAttemptRepository, receiptRenderingService)
+                .findRecordedOutcome("gw-txn-1");
+
+        assertThat(outcome).contains(RecordedChargeOutcome.SUCCEEDED);
+    }
+
+    @Test
+    void findRecordedOutcomeMapsAFailedPaymentAttemptToTheFailedOutcome() {
+        Invoice invoice = new Invoice(UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 7, 31), UUID.randomUUID());
+        PaymentAttempt attempt = new PaymentAttempt(
+                UUID.randomUUID(), invoice, PaymentAttemptStatus.FAILED, Instant.now(), "gw-declined-1");
+        when(paymentAttemptRepository.findFirstByGatewayReference("gw-declined-1")).thenReturn(Optional.of(attempt));
+
+        Optional<RecordedChargeOutcome> outcome = new ChargeRecordingAdapter(
+                invoiceRepository, paymentAttemptRepository, receiptRenderingService)
+                .findRecordedOutcome("gw-declined-1");
+
+        assertThat(outcome).contains(RecordedChargeOutcome.FAILED);
     }
 }

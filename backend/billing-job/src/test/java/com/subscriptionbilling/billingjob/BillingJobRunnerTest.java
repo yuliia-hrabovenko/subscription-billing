@@ -10,6 +10,7 @@ import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
+import com.subscriptionbilling.billingjob.invoicing.ChargeOutcomeApplier;
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
 import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
 import com.subscriptionbilling.billingjob.planchange.PendingPlanChangeOutcome;
@@ -76,13 +77,15 @@ class BillingJobRunnerTest {
     private BillingJobRunner runner() {
         // A plain instance wrapping this test's own mocks, not a separately mocked
         // collaborator -- every verify() below against chargeRecordingPort/
-        // billingCycleAdvancePort/dunningHandoff still observes calls DunningRetryCharge
-        // makes through them on the Dunning-retry path.
-        DunningRetryCharge dunningRetryCharge = new DunningRetryCharge(
-                paymentGatewayClient, chargeRecordingPort, billingCycleAdvancePort, dunningHandoff);
+        // billingCycleAdvancePort/dunningHandoff still observes calls ChargeOutcomeApplier
+        // makes through them, whether from BillingJobRunner's own success/decline path or
+        // from DunningRetryCharge's retry path.
+        ChargeOutcomeApplier chargeOutcomeApplier =
+                new ChargeOutcomeApplier(chargeRecordingPort, billingCycleAdvancePort, dunningHandoff);
+        DunningRetryCharge dunningRetryCharge = new DunningRetryCharge(paymentGatewayClient, chargeOutcomeApplier);
         return new BillingJobRunner(dueSubscriptionsPort, pendingPlanChangePort, chargeableSubscriptionPort,
-                paymentGatewayClient, chargeRecordingPort, billingCycleAdvancePort, dunningHandoff,
-                dunningRetryCharge, meterRegistry, FIXED_CLOCK);
+                paymentGatewayClient, chargeRecordingPort, dunningRetryCharge, chargeOutcomeApplier,
+                meterRegistry, FIXED_CLOCK);
     }
 
     @Test
@@ -175,12 +178,12 @@ class BillingJobRunnerTest {
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
-                chargeable.priceVersionId(), FIXED_CLOCK.instant())).thenReturn(invoiceId);
+                chargeable.priceVersionId(), null, FIXED_CLOCK.instant())).thenReturn(invoiceId);
 
         runner().run();
 
         verify(chargeRecordingPort).recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
-                chargeable.priceVersionId(), FIXED_CLOCK.instant());
+                chargeable.priceVersionId(), null, FIXED_CLOCK.instant());
         verify(dunningHandoff).onChargeFailed(subscriptionId, invoiceId, chargeable.billingPeriod(), FIXED_CLOCK.instant());
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
         verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
@@ -198,7 +201,7 @@ class BillingJobRunnerTest {
         runner().run();
 
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
-        verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any());
+        verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any(), any());
         verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
         verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
@@ -210,7 +213,7 @@ class BillingJobRunnerTest {
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
-        when(chargeRecordingPort.recordFailedCharge(any(), any(), any(), any())).thenReturn(UUID.randomUUID());
+        when(chargeRecordingPort.recordFailedCharge(any(), any(), any(), any(), any())).thenReturn(UUID.randomUUID());
         org.mockito.Mockito.doThrow(new IllegalStateException("dunning unavailable"))
                 .when(dunningHandoff).onChargeFailed(any(), any(), any(), any());
 
@@ -320,7 +323,7 @@ class BillingJobRunnerTest {
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         org.mockito.Mockito.doThrow(new ChargeAlreadyRecordedException("already recorded", new RuntimeException()))
-                .when(chargeRecordingPort).recordFailedCharge(any(), any(), any(), any());
+                .when(chargeRecordingPort).recordFailedCharge(any(), any(), any(), any(), any());
 
         runner().run();
 
@@ -341,7 +344,7 @@ class BillingJobRunnerTest {
         verify(chargeableSubscriptionPort, never()).loadForCharge(any());
         verify(paymentGatewayClient, never()).charge(any(), any());
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
-        verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any());
+        verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
     }
 
@@ -400,7 +403,7 @@ class BillingJobRunnerTest {
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(retryChargeable);
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, retryChargeable.billingPeriod(),
-                retryChargeable.priceVersionId(), FIXED_CLOCK.instant())).thenReturn(invoiceId);
+                retryChargeable.priceVersionId(), null, FIXED_CLOCK.instant())).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
         when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, FIXED_CLOCK.instant()))
                 .thenReturn(DunningRetryOutcome.RESCHEDULED);
@@ -425,7 +428,7 @@ class BillingJobRunnerTest {
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(retryChargeable);
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, retryChargeable.billingPeriod(),
-                retryChargeable.priceVersionId(), FIXED_CLOCK.instant())).thenReturn(invoiceId);
+                retryChargeable.priceVersionId(), null, FIXED_CLOCK.instant())).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
         when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, FIXED_CLOCK.instant()))
                 .thenReturn(DunningRetryOutcome.CANCELED);
