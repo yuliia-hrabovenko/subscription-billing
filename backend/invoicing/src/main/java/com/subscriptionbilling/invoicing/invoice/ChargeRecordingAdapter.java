@@ -4,6 +4,8 @@ import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedExcepti
 import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
 import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
 import com.subscriptionbilling.invoicing.receipt.ReceiptRenderingService;
+import com.subscriptionbilling.notifications.outbox.OutboxEvent;
+import com.subscriptionbilling.notifications.outbox.OutboxEventRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -25,9 +27,12 @@ import java.util.UUID;
  * ChargeAlreadyRecordedException} rather than a duplicate row or a raw {@link
  * DataIntegrityViolationException}. Also drives the Invoice's terminal status: a success
  * marks it {@code paid}; a retry that exhausts the bound marks it {@code failed}. A
- * success also triggers the Invoice's receipt rendering, in the same transaction as the
- * {@code paid} transition, so a receipt exists for every paid Invoice with no separate
- * trigger required.
+ * success also triggers the Invoice's receipt rendering and writes a {@code
+ * PAYMENT_SUCCEEDED} {@link OutboxEvent}, both in the same transaction as the {@code
+ * paid} transition, so a receipt and a notification exist for every paid Invoice with no
+ * separate trigger required — this is the single point every successful-charge path
+ * (renewal, Dunning recovery, self-service recovery) funnels through, so the event fires
+ * exactly once per successful charge regardless of which path produced it.
  */
 @Component
 public class ChargeRecordingAdapter implements ChargeRecordingPort {
@@ -37,12 +42,14 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
     private final InvoiceRepository invoiceRepository;
     private final PaymentAttemptRepository paymentAttemptRepository;
     private final ReceiptRenderingService receiptRenderingService;
+    private final OutboxEventRepository outboxEventRepository;
 
     public ChargeRecordingAdapter(InvoiceRepository invoiceRepository, PaymentAttemptRepository paymentAttemptRepository,
-                                   ReceiptRenderingService receiptRenderingService) {
+                                   ReceiptRenderingService receiptRenderingService, OutboxEventRepository outboxEventRepository) {
         this.invoiceRepository = invoiceRepository;
         this.paymentAttemptRepository = paymentAttemptRepository;
         this.receiptRenderingService = receiptRenderingService;
+        this.outboxEventRepository = outboxEventRepository;
     }
 
     @Override
@@ -61,6 +68,8 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
         invoice.markPaid();
         invoiceRepository.save(invoice);
         receiptRenderingService.renderAndStore(invoice, attemptedAt);
+        outboxEventRepository.save(new OutboxEvent(UUID.randomUUID(), "PAYMENT_SUCCEEDED",
+                receiptPayload(invoice.getId(), subscriptionId, billingPeriod)));
         log.info("Charge succeeded for subscription {} billing period {}: invoice {}, gateway transaction {}",
                 subscriptionId, billingPeriod, invoice.getId(), gatewayTransactionId);
     }
@@ -88,6 +97,11 @@ public class ChargeRecordingAdapter implements ChargeRecordingPort {
         }
         invoiceRepository.saveAndFlush(invoice);
         return new DunningRetryState(invoice.getCreatedAt(), invoice.getRetriesUsed(), invoice.retriesExhausted());
+    }
+
+    private static String receiptPayload(UUID invoiceId, UUID subscriptionId, LocalDate billingPeriod) {
+        return "{\"invoiceId\":\"" + invoiceId + "\",\"subscriptionId\":\"" + subscriptionId
+                + "\",\"billingPeriod\":\"" + billingPeriod + "\"}";
     }
 
     private Invoice findOrCreateInvoice(UUID subscriptionId, LocalDate billingPeriod, UUID priceVersionId) {

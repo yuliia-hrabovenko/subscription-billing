@@ -18,6 +18,8 @@ import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryChargeResult;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
 import com.subscriptionbilling.billingjob.invoicing.InvoiceCancellationPort;
+import com.subscriptionbilling.notifications.outbox.OutboxEvent;
+import com.subscriptionbilling.notifications.outbox.OutboxEventRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -74,6 +76,8 @@ class SubscriptionServiceTest {
     private DunningRetryCharge dunningRetryCharge;
     @Mock
     private InvoiceCancellationPort invoiceCancellationPort;
+    @Mock
+    private OutboxEventRepository outboxEventRepository;
 
     private final UUID planId = UUID.randomUUID();
     private final Plan freePlan = new Plan(planId, "free", "Free");
@@ -82,7 +86,7 @@ class SubscriptionServiceTest {
     private SubscriptionService service() {
         return new SubscriptionService(customerRepository, planRepository, subscriptionRepository,
                 planCatalogService, auditLogEntryRepository, tokenIssuer, idempotencyService,
-                chargeableSubscriptionPort, dunningRetryCharge, invoiceCancellationPort,
+                chargeableSubscriptionPort, dunningRetryCharge, invoiceCancellationPort, outboxEventRepository,
                 Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
     }
 
@@ -301,6 +305,11 @@ class SubscriptionServiceTest {
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("TRIALING");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
         assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-cancel-1");
+
+        ArgumentCaptor<OutboxEvent> outboxEvent = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outboxEventRepository).save(outboxEvent.capture());
+        assertThat(outboxEvent.getValue().getEventType()).isEqualTo("CANCELLATION_CONFIRMED");
+        assertThat(outboxEvent.getValue().getPayload()).contains(subscriptionId.toString()).contains(customerId.toString());
     }
 
     @Test
@@ -320,6 +329,10 @@ class SubscriptionServiceTest {
         verify(auditLogEntryRepository).append(auditEntry.capture());
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("PENDING_CANCELLATION");
+
+        // The deferred branch still confirms the request was recorded, not that the
+        // Subscription has reached canceled.
+        verify(outboxEventRepository).save(any(OutboxEvent.class));
     }
 
     @Test
@@ -341,6 +354,7 @@ class SubscriptionServiceTest {
         verify(auditLogEntryRepository).append(auditEntry.capture());
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
+        verify(outboxEventRepository).save(any(OutboxEvent.class));
     }
 
     @Test
@@ -357,6 +371,7 @@ class SubscriptionServiceTest {
         // No dunningBillingPeriod on this hand-seeded fixture (only suspend() sets one) --
         // there's no still-open Invoice to fail.
         verify(invoiceCancellationPort, never()).failStillOpenInvoice(any(), any());
+        verify(outboxEventRepository).save(any(OutboxEvent.class));
     }
 
     @Test
@@ -398,6 +413,7 @@ class SubscriptionServiceTest {
                 .isInstanceOf(SubscriptionAlreadyPendingCancellationException.class);
 
         verify(auditLogEntryRepository, never()).append(any());
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -412,6 +428,7 @@ class SubscriptionServiceTest {
                 .isInstanceOf(SubscriptionAlreadyCanceledException.class);
 
         verify(auditLogEntryRepository, never()).append(any());
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -425,6 +442,7 @@ class SubscriptionServiceTest {
                 .isInstanceOf(SubscriptionAccessDeniedException.class);
 
         verify(auditLogEntryRepository, never()).append(any());
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -442,6 +460,8 @@ class SubscriptionServiceTest {
         // transition was never re-run for this deduplicated retry.
         assertThat(view.state()).isEqualTo(SubscriptionState.ACTIVE);
         verify(auditLogEntryRepository, never()).append(any());
+        // Never a second, separate CANCELLATION_CONFIRMED write for a deduplicated retry.
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -463,6 +483,7 @@ class SubscriptionServiceTest {
 
         verify(idempotencyService).release(customerId, SubscriptionService.CANCEL_OPERATION, "key-3");
         verify(auditLogEntryRepository, never()).append(any());
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -485,6 +506,9 @@ class SubscriptionServiceTest {
 
         verify(idempotencyService).release(customerId, SubscriptionService.CANCEL_OPERATION, "key-4");
         verify(auditLogEntryRepository, never()).append(any());
+        // The transition ran in memory before the flush failed, but the whole method
+        // throws before ever reaching the outbox write -- no event for a failed flush.
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -517,6 +541,8 @@ class SubscriptionServiceTest {
         verify(auditLogEntryRepository).append(auditEntry.capture());
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("PENDING_CANCELLATION");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("ACTIVE");
+        // Undoing a cancellation is not itself a cancellation-confirmed trigger.
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -587,6 +613,8 @@ class SubscriptionServiceTest {
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("ACTIVE");
         assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-plan-1");
+        // A scheduled plan change is an explicit non-trigger: zero OutboxEvent rows.
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -733,6 +761,14 @@ class SubscriptionServiceTest {
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("TRIALING");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("SUSPENDED");
         assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-suspend-1");
+
+        ArgumentCaptor<OutboxEvent> outboxEvent = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outboxEventRepository).save(outboxEvent.capture());
+        assertThat(outboxEvent.getValue().getEventType()).isEqualTo("PAYMENT_FAILED");
+        assertThat(outboxEvent.getValue().getPayload())
+                .contains(subscriptionId.toString())
+                .contains("2026-08-22")
+                .contains("corr-suspend-1");
     }
 
     @Test
@@ -750,6 +786,7 @@ class SubscriptionServiceTest {
         verify(auditLogEntryRepository).append(auditEntry.capture());
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("SUSPENDED");
+        verify(outboxEventRepository).save(any(OutboxEvent.class));
     }
 
     @Test
@@ -764,6 +801,10 @@ class SubscriptionServiceTest {
 
         verify(subscriptionRepository, never()).saveAndFlush(any());
         verify(auditLogEntryRepository, never()).append(any());
+        // Only the first failure for a Billing Cycle reaches this method at all (a
+        // day 3/7 retry failure reschedules or cancels instead) -- an ineligible state
+        // here is a genuine rejection, not a retry, so it must still write no event.
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -775,6 +816,7 @@ class SubscriptionServiceTest {
                 .isInstanceOf(IllegalStateException.class);
 
         verify(auditLogEntryRepository, never()).append(any());
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -796,6 +838,9 @@ class SubscriptionServiceTest {
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("SUSPENDED");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
         assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-exhaust-1");
+        // These customers already got the one failure alert at initial suspension --
+        // a second, cancellation-confirmed email would be an undocumented 5th trigger.
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -810,6 +855,7 @@ class SubscriptionServiceTest {
 
         verify(subscriptionRepository, never()).saveAndFlush(any());
         verify(auditLogEntryRepository, never()).append(any());
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -821,6 +867,7 @@ class SubscriptionServiceTest {
                 .isInstanceOf(IllegalStateException.class);
 
         verify(auditLogEntryRepository, never()).append(any());
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -842,6 +889,8 @@ class SubscriptionServiceTest {
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
         assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-dispute-1");
+        // A dispute cancellation is explicitly silent -- zero OutboxEvent rows.
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -861,6 +910,7 @@ class SubscriptionServiceTest {
         verify(auditLogEntryRepository).append(auditEntry.capture());
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("SUSPENDED");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
@@ -875,6 +925,7 @@ class SubscriptionServiceTest {
         verify(subscriptionRepository, never()).saveAndFlush(any());
         verify(auditLogEntryRepository, never()).append(any());
         verifyNoInteractions(invoiceCancellationPort);
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test
