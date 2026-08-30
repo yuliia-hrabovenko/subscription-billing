@@ -16,8 +16,10 @@ public interface PendingPlanChangePort {
      * away from.
      *
      * @param subscriptionId a due Subscription's id
+     * @param correlationId  the triggering billing job run's correlation id, carried onto
+     *                       the resulting {@code AuditLogEntry} if a change was applied
      * @return the outcome, telling the caller whether and how to proceed with a charge
      *         attempt for this cycle
      */
-    PendingPlanChangeOutcome applyIfPending(UUID subscriptionId);
+    PendingPlanChangeOutcome applyIfPending(UUID subscriptionId, String correlationId);
 }

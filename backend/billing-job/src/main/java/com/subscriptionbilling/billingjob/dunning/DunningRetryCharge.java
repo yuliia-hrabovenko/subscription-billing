@@ -45,21 +45,25 @@ public class DunningRetryCharge {
      *                       Dunning retry (its {@code billingPeriod} must be the
      *                       original failed Billing Cycle, not a retry offset date)
      * @param attemptedAt    the instant this charge attempt is made
+     * @param correlationId  the triggering caller's correlation id, carried onto any
+     *                       resulting {@code AuditLogEntry}
      * @return the resolved outcome
      * @throws com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException
      *         if recording this attempt lost a race to a concurrent recording of the
      *         same Invoice
      */
-    public DunningRetryChargeResult attempt(UUID subscriptionId, ChargeableSubscription chargeable, Instant attemptedAt) {
+    public DunningRetryChargeResult attempt(UUID subscriptionId, ChargeableSubscription chargeable, Instant attemptedAt,
+                                             String correlationId) {
         ChargeResult result = paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.amount());
         return switch (result) {
             case ChargeResult.Succeeded succeeded -> {
-                chargeOutcomeApplier.applySuccess(subscriptionId, chargeable, succeeded.gatewayTransactionId(), attemptedAt);
+                chargeOutcomeApplier.applySuccess(
+                        subscriptionId, chargeable, succeeded.gatewayTransactionId(), attemptedAt, correlationId);
                 yield new DunningRetryChargeResult.Recovered(succeeded.gatewayTransactionId());
             }
             case ChargeResult.Declined declined -> {
                 DunningRetryOutcome outcome = chargeOutcomeApplier.applyRetryFailure(
-                        subscriptionId, chargeable, declined.gatewayReference(), attemptedAt);
+                        subscriptionId, chargeable, declined.gatewayReference(), attemptedAt, correlationId);
                 yield new DunningRetryChargeResult.Declined(outcome, declined.reason());
             }
             case ChargeResult.FailedTransiently transientFailure ->

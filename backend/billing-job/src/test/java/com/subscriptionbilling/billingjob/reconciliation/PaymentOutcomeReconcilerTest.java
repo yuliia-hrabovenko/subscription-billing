@@ -61,7 +61,7 @@ class PaymentOutcomeReconcilerTest {
         ReconciliationOutcome outcome = reconciler().reconcileSucceeded(subscriptionId, "gw-1", OCCURRED_AT);
 
         assertThat(outcome).isEqualTo(ReconciliationOutcome.APPLIED);
-        verify(chargeOutcomeApplier).applySuccess(subscriptionId, chargeable, "gw-1", OCCURRED_AT);
+        verify(chargeOutcomeApplier).applySuccess(subscriptionId, chargeable, "gw-1", OCCURRED_AT, "gw-1");
     }
 
     @Test
@@ -74,8 +74,8 @@ class PaymentOutcomeReconcilerTest {
         ReconciliationOutcome outcome = reconciler().reconcileFailed(subscriptionId, "gw-2", OCCURRED_AT);
 
         assertThat(outcome).isEqualTo(ReconciliationOutcome.APPLIED);
-        verify(chargeOutcomeApplier).applyFirstFailure(subscriptionId, chargeable, "gw-2", OCCURRED_AT);
-        verify(chargeOutcomeApplier, never()).applyRetryFailure(any(), any(), any(), any());
+        verify(chargeOutcomeApplier).applyFirstFailure(subscriptionId, chargeable, "gw-2", OCCURRED_AT, "gw-2");
+        verify(chargeOutcomeApplier, never()).applyRetryFailure(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -88,8 +88,8 @@ class PaymentOutcomeReconcilerTest {
         ReconciliationOutcome outcome = reconciler().reconcileFailed(subscriptionId, "gw-3", OCCURRED_AT);
 
         assertThat(outcome).isEqualTo(ReconciliationOutcome.APPLIED);
-        verify(chargeOutcomeApplier).applyRetryFailure(subscriptionId, chargeable, "gw-3", OCCURRED_AT);
-        verify(chargeOutcomeApplier, never()).applyFirstFailure(any(), any(), any(), any());
+        verify(chargeOutcomeApplier).applyRetryFailure(subscriptionId, chargeable, "gw-3", OCCURRED_AT, "gw-3");
+        verify(chargeOutcomeApplier, never()).applyFirstFailure(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -101,7 +101,7 @@ class PaymentOutcomeReconcilerTest {
 
         assertThat(outcome).isEqualTo(ReconciliationOutcome.ALREADY_RECORDED);
         verify(chargeableSubscriptionPort, never()).loadForCharge(any());
-        verify(chargeOutcomeApplier, never()).applySuccess(any(), any(), any(), any());
+        verify(chargeOutcomeApplier, never()).applySuccess(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -124,7 +124,7 @@ class PaymentOutcomeReconcilerTest {
 
         assertThat(outcome).isEqualTo(ReconciliationOutcome.CONFLICTING_OUTCOME);
         verify(chargeableSubscriptionPort, never()).loadForCharge(any());
-        verify(chargeOutcomeApplier, never()).applySuccess(any(), any(), any(), any());
+        verify(chargeOutcomeApplier, never()).applySuccess(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -145,7 +145,7 @@ class PaymentOutcomeReconcilerTest {
         when(chargeRecordingPort.findRecordedOutcome("gw-8")).thenReturn(Optional.empty());
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
         doThrow(new ChargeAlreadyRecordedException("already recorded", new RuntimeException()))
-                .when(chargeOutcomeApplier).applySuccess(any(), any(), any(), any());
+                .when(chargeOutcomeApplier).applySuccess(any(), any(), any(), any(), any());
 
         ReconciliationOutcome outcome = reconciler().reconcileSucceeded(subscriptionId, "gw-8", OCCURRED_AT);
 

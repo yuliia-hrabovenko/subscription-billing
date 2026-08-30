@@ -142,7 +142,7 @@ class BillingJobRunnerTest {
         verify(chargeRecordingPort).recordSuccessfulCharge(
                 eq(subscriptionId), eq(LocalDate.of(2026, 1, 31)), eq(chargeable.priceVersionId()),
                 eq("gw-txn-1"), eq(FIXED_CLOCK.instant()));
-        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2026, 2, 28), "gw-txn-1");
+        verify(billingCycleAdvancePort).advanceDueDate(eq(subscriptionId), eq(LocalDate.of(2026, 2, 28)), any());
     }
 
     @Test
@@ -161,7 +161,7 @@ class BillingJobRunnerTest {
 
         runner().run();
 
-        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2026, 9, 21), "gw-txn-1");
+        verify(billingCycleAdvancePort).advanceDueDate(eq(subscriptionId), eq(LocalDate.of(2026, 9, 21)), any());
     }
 
     @Test
@@ -200,7 +200,8 @@ class BillingJobRunnerTest {
 
         verify(chargeRecordingPort).recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), null, FIXED_CLOCK.instant());
-        verify(dunningHandoff).onChargeFailed(subscriptionId, invoiceId, chargeable.billingPeriod(), FIXED_CLOCK.instant());
+        verify(dunningHandoff).onChargeFailed(
+                eq(subscriptionId), eq(invoiceId), eq(chargeable.billingPeriod()), eq(FIXED_CLOCK.instant()), any());
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
         verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
@@ -219,7 +220,7 @@ class BillingJobRunnerTest {
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
         verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any(), any());
         verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
-        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any());
+        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
     }
 
@@ -231,7 +232,7 @@ class BillingJobRunnerTest {
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(any(), any(), any(), any(), any())).thenReturn(UUID.randomUUID());
         org.mockito.Mockito.doThrow(new IllegalStateException("dunning unavailable"))
-                .when(dunningHandoff).onChargeFailed(any(), any(), any(), any());
+                .when(dunningHandoff).onChargeFailed(any(), any(), any(), any(), any());
 
         runner().run();
 
@@ -290,7 +291,7 @@ class BillingJobRunnerTest {
 
         verify(paymentGatewayClient, never()).charge(any(), any());
         verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
-        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any());
+        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
     }
 
@@ -343,7 +344,7 @@ class BillingJobRunnerTest {
 
         runner().run();
 
-        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any());
+        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
         assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_charge_attempt_failures_total").counter().count()).isEqualTo(0.0);
@@ -353,7 +354,8 @@ class BillingJobRunnerTest {
     void aPendingPlanChangeAppliedToAFreePlanSkipsTheChargeAttemptEntirely() {
         UUID subscriptionId = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
-        when(pendingPlanChangePort.applyIfPending(subscriptionId)).thenReturn(PendingPlanChangeOutcome.APPLIED_FREE);
+        when(pendingPlanChangePort.applyIfPending(eq(subscriptionId), any(String.class)))
+                .thenReturn(PendingPlanChangeOutcome.APPLIED_FREE);
 
         runner().run();
 
@@ -368,7 +370,8 @@ class BillingJobRunnerTest {
     void aPendingPlanChangeAppliedToAStillPaidPlanProceedsToChargeThisCycle() {
         UUID subscriptionId = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
-        when(pendingPlanChangePort.applyIfPending(subscriptionId)).thenReturn(PendingPlanChangeOutcome.APPLIED_PAID);
+        when(pendingPlanChangePort.applyIfPending(eq(subscriptionId), any(String.class)))
+                .thenReturn(PendingPlanChangeOutcome.APPLIED_PAID);
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
@@ -382,7 +385,8 @@ class BillingJobRunnerTest {
     void noPendingPlanChangeProceedsToChargeAsNormal() {
         UUID subscriptionId = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
-        when(pendingPlanChangePort.applyIfPending(subscriptionId)).thenReturn(PendingPlanChangeOutcome.NO_PENDING_CHANGE);
+        when(pendingPlanChangePort.applyIfPending(eq(subscriptionId), any(String.class)))
+                .thenReturn(PendingPlanChangeOutcome.NO_PENDING_CHANGE);
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
         when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
@@ -403,7 +407,7 @@ class BillingJobRunnerTest {
 
         verify(chargeRecordingPort).recordSuccessfulCharge(eq(subscriptionId), eq(retryChargeable.billingPeriod()),
                 any(), eq("gw-txn-1"), any());
-        verify(billingCycleAdvancePort).advanceDueDate(eq(subscriptionId), any(), eq("gw-txn-1"));
+        verify(billingCycleAdvancePort).advanceDueDate(eq(subscriptionId), any(), any());
         assertThat(meterRegistry.get("billing_job_dunning_attempts_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_dunning_recoveries_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
@@ -421,14 +425,14 @@ class BillingJobRunnerTest {
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, retryChargeable.billingPeriod(),
                 retryChargeable.priceVersionId(), null, FIXED_CLOCK.instant())).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
-        when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, FIXED_CLOCK.instant()))
+        when(dunningHandoff.onRetryFailed(eq(subscriptionId), eq(invoiceId), eq(retryState), eq(FIXED_CLOCK.instant()), any()))
                 .thenReturn(DunningRetryOutcome.RESCHEDULED);
 
         runner().run();
 
         verify(chargeRecordingPort).recordRetryAttempt(invoiceId);
-        verify(dunningHandoff).onRetryFailed(subscriptionId, invoiceId, retryState, FIXED_CLOCK.instant());
-        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any());
+        verify(dunningHandoff).onRetryFailed(eq(subscriptionId), eq(invoiceId), eq(retryState), eq(FIXED_CLOCK.instant()), any());
+        verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_dunning_attempts_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_dunning_exhaustions_total").counter().count()).isEqualTo(0.0);
         assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
@@ -446,7 +450,7 @@ class BillingJobRunnerTest {
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, retryChargeable.billingPeriod(),
                 retryChargeable.priceVersionId(), null, FIXED_CLOCK.instant())).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
-        when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, FIXED_CLOCK.instant()))
+        when(dunningHandoff.onRetryFailed(eq(subscriptionId), eq(invoiceId), eq(retryState), eq(FIXED_CLOCK.instant()), any()))
                 .thenReturn(DunningRetryOutcome.CANCELED);
 
         runner().run();
@@ -470,6 +474,55 @@ class BillingJobRunnerTest {
 
         verify(chargeRecordingPort, never()).invoiceAlreadyRecorded(any(), any());
         verify(paymentGatewayClient).charge(any(), any());
+    }
+
+    @Test
+    void aSuspensionAndARecoveryProcessedInTheSameRunShareTheSameCorrelationId() {
+        UUID suspending = UUID.randomUUID();
+        UUID recovering = UUID.randomUUID();
+        // Distinct payment method tokens -- not just distinct Subscription ids -- so each
+        // Subscription's gateway.charge() stub only matches its own invocation.
+        ChargeableSubscription suspendingChargeable = new ChargeableSubscription(
+                suspending, "tok_suspend", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24);
+        ChargeableSubscription recoveringChargeable = new ChargeableSubscription(
+                recovering, "tok_recover", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24, true);
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(suspending, recovering));
+        when(chargeableSubscriptionPort.loadForCharge(suspending)).thenReturn(suspendingChargeable);
+        when(chargeableSubscriptionPort.loadForCharge(recovering)).thenReturn(recoveringChargeable);
+        when(paymentGatewayClient.charge(suspendingChargeable.paymentMethodToken(), suspendingChargeable.amount()))
+                .thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(recoveringChargeable.paymentMethodToken(), recoveringChargeable.amount()))
+                .thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+
+        runner().run();
+
+        ArgumentCaptor<String> suspensionCorrelationId = ArgumentCaptor.forClass(String.class);
+        verify(dunningHandoff).onChargeFailed(eq(suspending), any(), any(), any(), suspensionCorrelationId.capture());
+        ArgumentCaptor<String> recoveryCorrelationId = ArgumentCaptor.forClass(String.class);
+        verify(billingCycleAdvancePort).advanceDueDate(eq(recovering), any(), recoveryCorrelationId.capture());
+
+        assertThat(suspensionCorrelationId.getValue()).isEqualTo(recoveryCorrelationId.getValue());
+    }
+
+    @Test
+    void subscriptionsProcessedInDifferentRunsGetDifferentCorrelationIds() {
+        UUID firstRunSubscription = UUID.randomUUID();
+        UUID secondRunSubscription = UUID.randomUUID();
+        when(chargeableSubscriptionPort.loadForCharge(firstRunSubscription)).thenReturn(chargeable(firstRunSubscription));
+        when(chargeableSubscriptionPort.loadForCharge(secondRunSubscription)).thenReturn(chargeable(secondRunSubscription));
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+
+        BillingJobRunner runner = runner();
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(firstRunSubscription));
+        runner.run();
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(secondRunSubscription));
+        runner.run();
+
+        ArgumentCaptor<String> correlationIds = ArgumentCaptor.forClass(String.class);
+        verify(dunningHandoff, org.mockito.Mockito.times(2))
+                .onChargeFailed(any(), any(), any(), any(), correlationIds.capture());
+
+        assertThat(correlationIds.getAllValues().get(0)).isNotEqualTo(correlationIds.getAllValues().get(1));
     }
 
     @Test

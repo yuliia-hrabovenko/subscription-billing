@@ -41,7 +41,7 @@ public class PendingPlanChangeAdapter implements PendingPlanChangePort {
 
     @Override
     @Transactional
-    public PendingPlanChangeOutcome applyIfPending(UUID subscriptionId) {
+    public PendingPlanChangeOutcome applyIfPending(UUID subscriptionId, String correlationId) {
         Subscription subscription = subscriptionRepository.findById(subscriptionId)
                 .orElseThrow(() -> new IllegalStateException("Subscription " + subscriptionId + " does not exist"));
         Plan targetPlan = subscription.getPendingPlanChange();
@@ -56,7 +56,7 @@ public class PendingPlanChangeAdapter implements PendingPlanChangePort {
 
         auditLogEntryRepository.append(new AuditLogEntry(
                 UUID.randomUUID(), subscription.getId(), ActorType.SYSTEM, previousPlan.getCode(),
-                targetPlan.getCode(), UUID.randomUUID().toString()));
+                targetPlan.getCode(), correlationId));
 
         return targetPlanIsFree ? PendingPlanChangeOutcome.APPLIED_FREE : PendingPlanChangeOutcome.APPLIED_PAID;
     }

@@ -39,6 +39,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -1033,12 +1034,12 @@ class SubscriptionServiceTest {
                 subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 1), 1, true);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
-        when(dunningRetryCharge.attempt(subscriptionId, chargeable, FIXED_NOW))
+        when(dunningRetryCharge.attempt(eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), any(String.class)))
                 .thenReturn(new DunningRetryChargeResult.Recovered("gw-txn-1"));
 
         service().retryPayment(subscriptionId, customerId, null);
 
-        verify(dunningRetryCharge).attempt(subscriptionId, chargeable, FIXED_NOW);
+        verify(dunningRetryCharge).attempt(eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), any(String.class));
     }
 
     @Test
@@ -1111,7 +1112,7 @@ class SubscriptionServiceTest {
         when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-3"))
                 .thenReturn(true);
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
-        when(dunningRetryCharge.attempt(subscriptionId, chargeable, FIXED_NOW))
+        when(dunningRetryCharge.attempt(eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), any(String.class)))
                 .thenReturn(new DunningRetryChargeResult.FailedTransiently("gateway_timeout"));
 
         assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, "key-3"))
@@ -1132,7 +1133,7 @@ class SubscriptionServiceTest {
         when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-4"))
                 .thenReturn(true);
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
-        when(dunningRetryCharge.attempt(subscriptionId, chargeable, FIXED_NOW))
+        when(dunningRetryCharge.attempt(eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), any(String.class)))
                 .thenReturn(new DunningRetryChargeResult.Declined(DunningRetryOutcome.RESCHEDULED, "card_declined"));
 
         service().retryPayment(subscriptionId, customerId, "key-4");
