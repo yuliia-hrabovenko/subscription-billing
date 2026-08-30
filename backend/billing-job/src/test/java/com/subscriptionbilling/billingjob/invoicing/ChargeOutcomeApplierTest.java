@@ -49,11 +49,11 @@ class ChargeOutcomeApplierTest {
         UUID subscriptionId = UUID.randomUUID();
         ChargeableSubscription chargeable = chargeable(subscriptionId);
 
-        applier().applySuccess(subscriptionId, chargeable, "gw-txn-1", ATTEMPTED_AT);
+        applier().applySuccess(subscriptionId, chargeable, "gw-txn-1", ATTEMPTED_AT, "corr-1");
 
         verify(chargeRecordingPort).recordSuccessfulCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), "gw-txn-1", ATTEMPTED_AT);
-        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2027, 2, 8), "gw-txn-1");
+        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2027, 2, 8), "corr-1");
     }
 
     @Test
@@ -64,9 +64,9 @@ class ChargeOutcomeApplierTest {
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), "gw-declined-1", ATTEMPTED_AT)).thenReturn(invoiceId);
 
-        applier().applyFirstFailure(subscriptionId, chargeable, "gw-declined-1", ATTEMPTED_AT);
+        applier().applyFirstFailure(subscriptionId, chargeable, "gw-declined-1", ATTEMPTED_AT, "corr-2");
 
-        verify(dunningHandoff).onChargeFailed(subscriptionId, invoiceId, chargeable.billingPeriod(), ATTEMPTED_AT);
+        verify(dunningHandoff).onChargeFailed(subscriptionId, invoiceId, chargeable.billingPeriod(), ATTEMPTED_AT, "corr-2");
     }
 
     @Test
@@ -78,10 +78,11 @@ class ChargeOutcomeApplierTest {
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), "gw-declined-2", ATTEMPTED_AT)).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
-        when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, ATTEMPTED_AT))
+        when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, ATTEMPTED_AT, "corr-3"))
                 .thenReturn(DunningRetryOutcome.RESCHEDULED);
 
-        DunningRetryOutcome outcome = applier().applyRetryFailure(subscriptionId, chargeable, "gw-declined-2", ATTEMPTED_AT);
+        DunningRetryOutcome outcome =
+                applier().applyRetryFailure(subscriptionId, chargeable, "gw-declined-2", ATTEMPTED_AT, "corr-3");
 
         assertThat(outcome).isEqualTo(DunningRetryOutcome.RESCHEDULED);
         verify(chargeRecordingPort).recordRetryAttempt(invoiceId);

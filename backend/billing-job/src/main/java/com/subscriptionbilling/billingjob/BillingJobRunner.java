@@ -172,16 +172,23 @@ public class BillingJobRunner {
      * Selects every Subscription due for a charge as of today and attempts to charge
      * each one, then runs the independent trial-ending-soon scan.
      *
+     * <p>Generates one correlation id for this entire run and threads it through every
+     * per-subscription operation below (plan-change application, charge outcome, Dunning
+     * suspend/retry/cancel), so every {@code AuditLogEntry} this run produces — across
+     * however many Subscriptions it touches — traces back to the same run, distinct from
+     * any other run's.
+     *
      * @return the ids of every Subscription selected as due, regardless of whether its
      *         charge attempt succeeded — never includes a trial-ending-soon candidate
      *         that wasn't also due for a charge
      */
     public List<UUID> run() {
         return jobDuration.record(() -> {
+            String runCorrelationId = UUID.randomUUID().toString();
             List<UUID> dueSubscriptionIds = dueSubscriptionsPort.findDueSubscriptionIds(LocalDate.now(clock));
             for (UUID subscriptionId : dueSubscriptionIds) {
                 try {
-                    chargeOneCycle(subscriptionId);
+                    chargeOneCycle(subscriptionId, runCorrelationId);
                 } catch (RuntimeException chargeAttemptFailed) {
                     // One Subscription's port call blowing up (missing PriceVersion, a
                     // transient DB error, ...) must not stop every other due
@@ -213,8 +220,8 @@ public class BillingJobRunner {
         }
     }
 
-    private void chargeOneCycle(UUID subscriptionId) {
-        if (pendingPlanChangePort.applyIfPending(subscriptionId) == PendingPlanChangeOutcome.APPLIED_FREE) {
+    private void chargeOneCycle(UUID subscriptionId, String correlationId) {
+        if (pendingPlanChangePort.applyIfPending(subscriptionId, correlationId) == PendingPlanChangeOutcome.APPLIED_FREE) {
             // Applying the pending change already moved this Subscription onto a free
             // Plan and cleared its Billing Cycle/due date -- there is nothing left for
             // this cycle to charge.
@@ -237,13 +244,15 @@ public class BillingJobRunner {
         Instant attemptedAt = Instant.now(clock);
         try {
             if (chargeable.dunningRetry()) {
-                handleDunningRetryCharge(subscriptionId, chargeable, attemptedAt);
+                handleDunningRetryCharge(subscriptionId, chargeable, attemptedAt, correlationId);
                 return;
             }
             ChargeResult result = paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.amount());
             switch (result) {
-                case ChargeResult.Succeeded succeeded -> handleSuccess(subscriptionId, chargeable, succeeded, attemptedAt);
-                case ChargeResult.Declined declined -> handleDecline(subscriptionId, chargeable, declined, attemptedAt);
+                case ChargeResult.Succeeded succeeded ->
+                        handleSuccess(subscriptionId, chargeable, succeeded, attemptedAt, correlationId);
+                case ChargeResult.Declined declined ->
+                        handleDecline(subscriptionId, chargeable, declined, attemptedAt, correlationId);
                 case ChargeResult.FailedTransiently transientFailure ->
                         // Never treated as a decline: no PaymentAttempt, no Dunning hand-off,
                         // no state change. Retrying it is Payment Gateway Integration's job.
@@ -263,14 +272,14 @@ public class BillingJobRunner {
     }
 
     private void handleSuccess(UUID subscriptionId, ChargeableSubscription chargeable,
-                                ChargeResult.Succeeded succeeded, Instant attemptedAt) {
-        chargeOutcomeApplier.applySuccess(subscriptionId, chargeable, succeeded.gatewayTransactionId(), attemptedAt);
+                                ChargeResult.Succeeded succeeded, Instant attemptedAt, String correlationId) {
+        chargeOutcomeApplier.applySuccess(subscriptionId, chargeable, succeeded.gatewayTransactionId(), attemptedAt, correlationId);
         subscriptionsProcessed.increment();
     }
 
     private void handleDecline(UUID subscriptionId, ChargeableSubscription chargeable,
-                                ChargeResult.Declined declined, Instant attemptedAt) {
-        chargeOutcomeApplier.applyFirstFailure(subscriptionId, chargeable, declined.gatewayReference(), attemptedAt);
+                                ChargeResult.Declined declined, Instant attemptedAt, String correlationId) {
+        chargeOutcomeApplier.applyFirstFailure(subscriptionId, chargeable, declined.gatewayReference(), attemptedAt, correlationId);
         declinedCharges.increment();
         log.info("Charge declined for subscription {}: {}", subscriptionId, declined.reason());
     }
@@ -281,9 +290,10 @@ public class BillingJobRunner {
      * retry-payment endpoint, and only translates the result into this job's own
      * metrics/logging.
      */
-    private void handleDunningRetryCharge(UUID subscriptionId, ChargeableSubscription chargeable, Instant attemptedAt) {
+    private void handleDunningRetryCharge(UUID subscriptionId, ChargeableSubscription chargeable, Instant attemptedAt,
+                                           String correlationId) {
         dunningAttempts.increment();
-        DunningRetryChargeResult result = dunningRetryCharge.attempt(subscriptionId, chargeable, attemptedAt);
+        DunningRetryChargeResult result = dunningRetryCharge.attempt(subscriptionId, chargeable, attemptedAt, correlationId);
         switch (result) {
             case DunningRetryChargeResult.Recovered recovered -> {
                 dunningRecoveries.increment();

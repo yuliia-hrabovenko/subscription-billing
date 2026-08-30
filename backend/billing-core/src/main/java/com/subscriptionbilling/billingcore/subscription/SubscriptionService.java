@@ -455,7 +455,12 @@ public class SubscriptionService {
         }
 
         ChargeableSubscription chargeable = chargeableSubscriptionPort.loadForCharge(subscriptionId);
-        DunningRetryChargeResult result = dunningRetryCharge.attempt(subscriptionId, chargeable, Instant.now(clock));
+        // A fresh id per call, not the request's correlationId: this attempt's resulting
+        // AuditLogEntry (if any) is attributed ActorType.SYSTEM regardless of trigger,
+        // same as the billing job's own retries -- self-service attribution is out of
+        // this method's scope.
+        DunningRetryChargeResult result = dunningRetryCharge.attempt(
+                subscriptionId, chargeable, Instant.now(clock), UUID.randomUUID().toString());
         if (result instanceof DunningRetryChargeResult.FailedTransiently transientFailure) {
             releaseIfPresent(hasIdempotencyKey, authenticatedCustomerId, idempotencyKey);
             throw new PaymentGatewayUnavailableException(transientFailure.reason());

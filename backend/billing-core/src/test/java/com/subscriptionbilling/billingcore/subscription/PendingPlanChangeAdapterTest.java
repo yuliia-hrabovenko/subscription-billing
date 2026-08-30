@@ -59,7 +59,7 @@ class PendingPlanChangeAdapterTest {
         subscription.advanceDueDate(LocalDate.of(2026, 8, 24));
         when(subscriptionRepository.findById(subscription.getId())).thenReturn(Optional.of(subscription));
 
-        PendingPlanChangeOutcome outcome = adapter().applyIfPending(subscription.getId());
+        PendingPlanChangeOutcome outcome = adapter().applyIfPending(subscription.getId(), "corr-1");
 
         assertThat(outcome).isEqualTo(PendingPlanChangeOutcome.NO_PENDING_CHANGE);
         assertThat(subscription.getPlan()).isEqualTo(currentPlan);
@@ -80,7 +80,7 @@ class PendingPlanChangeAdapterTest {
         when(priceVersionRepository.findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
                 targetPlan.getId(), dueDate.atStartOfDay(ZoneOffset.UTC).toInstant())).thenReturn(Optional.of(targetPrice));
 
-        PendingPlanChangeOutcome outcome = adapter().applyIfPending(subscription.getId());
+        PendingPlanChangeOutcome outcome = adapter().applyIfPending(subscription.getId(), "corr-2");
 
         assertThat(outcome).isEqualTo(PendingPlanChangeOutcome.APPLIED_PAID);
         assertThat(subscription.getPlan()).isEqualTo(targetPlan);
@@ -95,6 +95,7 @@ class PendingPlanChangeAdapterTest {
         assertThat(entry.getActorType()).isEqualTo(ActorType.SYSTEM);
         assertThat(entry.getOldState()).isEqualTo("pro");
         assertThat(entry.getNewState()).isEqualTo("enterprise");
+        assertThat(entry.getCorrelationId()).isEqualTo("corr-2");
     }
 
     @Test
@@ -110,7 +111,7 @@ class PendingPlanChangeAdapterTest {
         when(priceVersionRepository.findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
                 freePlan.getId(), dueDate.atStartOfDay(ZoneOffset.UTC).toInstant())).thenReturn(Optional.of(freePrice));
 
-        PendingPlanChangeOutcome outcome = adapter().applyIfPending(subscription.getId());
+        PendingPlanChangeOutcome outcome = adapter().applyIfPending(subscription.getId(), "corr-3");
 
         assertThat(outcome).isEqualTo(PendingPlanChangeOutcome.APPLIED_FREE);
         assertThat(subscription.getPlan()).isEqualTo(freePlan);
@@ -126,7 +127,7 @@ class PendingPlanChangeAdapterTest {
         UUID subscriptionId = UUID.randomUUID();
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> adapter().applyIfPending(subscriptionId))
+        assertThatThrownBy(() -> adapter().applyIfPending(subscriptionId, "corr-4"))
                 .isInstanceOf(IllegalStateException.class);
     }
 
@@ -141,7 +142,7 @@ class PendingPlanChangeAdapterTest {
         when(priceVersionRepository.findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
                 targetPlan.getId(), dueDate.atStartOfDay(ZoneOffset.UTC).toInstant())).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> adapter().applyIfPending(subscription.getId()))
+        assertThatThrownBy(() -> adapter().applyIfPending(subscription.getId(), "corr-5"))
                 .isInstanceOf(IllegalStateException.class);
     }
 }

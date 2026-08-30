@@ -44,15 +44,19 @@ public class ChargeOutcomeApplier {
      *
      * @param subscriptionId       the Subscription charged
      * @param chargeable           the resolved charge details this success is for
-     * @param gatewayTransactionId the gateway's reference for the completed charge
+     * @param gatewayTransactionId the gateway's reference for the completed charge,
+     *                             recorded on the PaymentAttempt
      * @param attemptedAt          the instant the gateway resolved the charge
+     * @param correlationId        the triggering caller's correlation id, carried onto
+     *                             the resulting {@code AuditLogEntry} if this success
+     *                             transitions the Subscription's state
      */
     public void applySuccess(UUID subscriptionId, ChargeableSubscription chargeable, String gatewayTransactionId,
-                              Instant attemptedAt) {
+                              Instant attemptedAt, String correlationId) {
         chargeRecordingPort.recordSuccessfulCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), gatewayTransactionId, attemptedAt);
         LocalDate nextDueDate = new AnchorDate(chargeable.anchorDayOfMonth()).next(chargeable.billingPeriod());
-        billingCycleAdvancePort.advanceDueDate(subscriptionId, nextDueDate, gatewayTransactionId);
+        billingCycleAdvancePort.advanceDueDate(subscriptionId, nextDueDate, correlationId);
     }
 
     /**
@@ -65,12 +69,15 @@ public class ChargeOutcomeApplier {
      * @param gatewayReference the gateway's reference for the declined attempt, or null
      *                         if the gateway didn't supply one
      * @param attemptedAt      the instant the gateway resolved the charge
+     * @param correlationId    the triggering caller's correlation id, carried onto the
+     *                         resulting suspension's {@code AuditLogEntry}
      */
     public void applyFirstFailure(UUID subscriptionId, ChargeableSubscription chargeable, String gatewayReference,
-                                   Instant attemptedAt) {
+                                   Instant attemptedAt, String correlationId) {
         UUID invoiceId = chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), gatewayReference, attemptedAt);
-        dunningHandoff.onChargeFailed(subscriptionId, invoiceId, chargeable.billingPeriod(), attemptedAt);
+        dunningHandoff.onChargeFailed(
+                subscriptionId, invoiceId, chargeable.billingPeriod(), attemptedAt, correlationId);
     }
 
     /**
@@ -83,14 +90,16 @@ public class ChargeOutcomeApplier {
      * @param gatewayReference the gateway's reference for the declined attempt, or null
      *                         if the gateway didn't supply one
      * @param attemptedAt      the instant the gateway resolved the charge
+     * @param correlationId    the triggering caller's correlation id, carried onto a
+     *                         resulting cancellation's {@code AuditLogEntry}
      * @return whether the retry bound was reached (the Subscription was canceled) or the
      *         next Dunning offset was scheduled
      */
     public DunningRetryOutcome applyRetryFailure(UUID subscriptionId, ChargeableSubscription chargeable,
-                                                  String gatewayReference, Instant attemptedAt) {
+                                                  String gatewayReference, Instant attemptedAt, String correlationId) {
         UUID invoiceId = chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), gatewayReference, attemptedAt);
         DunningRetryState retryState = chargeRecordingPort.recordRetryAttempt(invoiceId);
-        return dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, attemptedAt);
+        return dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, attemptedAt, correlationId);
     }
 }

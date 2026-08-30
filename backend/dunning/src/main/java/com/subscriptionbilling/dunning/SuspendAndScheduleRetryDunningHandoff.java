@@ -33,17 +33,20 @@ public class SuspendAndScheduleRetryDunningHandoff implements DunningHandoff {
     /**
      * Suspends the Subscription identified by {@code subscriptionId}, then schedules
      * its day-1 Dunning retry, computed from {@code failedAt} via {@link
-     * DunningSchedule}. {@code invoiceId} is passed through as the correlation ID for
-     * the suspension, tying it back to the specific failed Payment Attempt.
+     * DunningSchedule}. {@code correlationId} is passed through as the correlation ID
+     * for the suspension.
      *
      * @param subscriptionId the Subscription to suspend and schedule the retry for
      * @param invoiceId      the Invoice the failed Payment Attempt belongs to
      * @param billingPeriod  the Billing Cycle date whose charge just failed
      * @param failedAt       the instant this initial charge failure was resolved
+     * @param correlationId  the triggering caller's correlation id, passed through as
+     *                       the suspension's correlation id
      */
     @Override
-    public void onChargeFailed(UUID subscriptionId, UUID invoiceId, LocalDate billingPeriod, Instant failedAt) {
-        subscriptionSuspensionPort.suspend(subscriptionId, billingPeriod, invoiceId.toString());
+    public void onChargeFailed(UUID subscriptionId, UUID invoiceId, LocalDate billingPeriod, Instant failedAt,
+                                String correlationId) {
+        subscriptionSuspensionPort.suspend(subscriptionId, billingPeriod, correlationId);
 
         LocalDate dayOneRetryDueDate = new DunningSchedule(failedAt).dayOneRetryAt().atZone(ZoneOffset.UTC).toLocalDate();
         subscriptionSuspensionPort.scheduleRetry(subscriptionId, dayOneRetryDueDate);
@@ -55,8 +58,8 @@ public class SuspendAndScheduleRetryDunningHandoff implements DunningHandoff {
      * — day 3 after a {@code retriesUsed == 1} (day-1) failure, day 7 after a {@code
      * retriesUsed == 2} (day-3) failure — computed from {@link
      * DunningRetryState#initialFailureAt()} via {@link DunningSchedule}, never from
-     * {@code failedAt}. {@code invoiceId} is passed through as the correlation ID for a
-     * resulting cancellation.
+     * {@code failedAt}. {@code correlationId} is passed through as the correlation ID
+     * for a resulting cancellation.
      *
      * @param subscriptionId the Subscription the failed retry was attempted against
      * @param invoiceId      the Invoice the failed Payment Attempt belongs to
@@ -65,11 +68,14 @@ public class SuspendAndScheduleRetryDunningHandoff implements DunningHandoff {
      * @param failedAt       the instant this retry failure was resolved (unused when
      *                       rescheduling — the schedule is anchored to the Invoice's
      *                       original failure, not to this attempt)
+     * @param correlationId  the triggering caller's correlation id, passed through as a
+     *                       resulting cancellation's correlation id
      */
     @Override
-    public DunningRetryOutcome onRetryFailed(UUID subscriptionId, UUID invoiceId, DunningRetryState retryState, Instant failedAt) {
+    public DunningRetryOutcome onRetryFailed(UUID subscriptionId, UUID invoiceId, DunningRetryState retryState,
+                                              Instant failedAt, String correlationId) {
         if (retryState.retriesExhausted()) {
-            subscriptionSuspensionPort.cancel(subscriptionId, invoiceId.toString());
+            subscriptionSuspensionPort.cancel(subscriptionId, correlationId);
             return DunningRetryOutcome.CANCELED;
         }
 

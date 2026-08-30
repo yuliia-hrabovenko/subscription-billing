@@ -103,12 +103,18 @@ public class PaymentOutcomeReconciler {
     private void applyFresh(UUID subscriptionId, String gatewayReference, RecordedChargeOutcome reportedOutcome,
                              Instant occurredAt) {
         ChargeableSubscription chargeable = chargeableSubscriptionPort.loadForCharge(subscriptionId);
+        // The gateway reference doubles as this event's correlation id -- there is no
+        // job run or request to inherit one from, and it's already this event's own
+        // correlation key (see class Javadoc).
         if (reportedOutcome == RecordedChargeOutcome.SUCCEEDED) {
-            chargeOutcomeApplier.applySuccess(subscriptionId, chargeable, gatewayReference, occurredAt);
+            chargeOutcomeApplier.applySuccess(
+                    subscriptionId, chargeable, gatewayReference, occurredAt, gatewayReference);
         } else if (chargeable.dunningRetry()) {
-            chargeOutcomeApplier.applyRetryFailure(subscriptionId, chargeable, gatewayReference, occurredAt);
+            chargeOutcomeApplier.applyRetryFailure(
+                    subscriptionId, chargeable, gatewayReference, occurredAt, gatewayReference);
         } else {
-            chargeOutcomeApplier.applyFirstFailure(subscriptionId, chargeable, gatewayReference, occurredAt);
+            chargeOutcomeApplier.applyFirstFailure(
+                    subscriptionId, chargeable, gatewayReference, occurredAt, gatewayReference);
         }
     }
 }
