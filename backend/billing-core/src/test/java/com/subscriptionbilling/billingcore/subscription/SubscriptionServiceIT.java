@@ -18,6 +18,8 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -469,5 +471,21 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
 
         assertThat(outboxEventsFor(signup.subscriptionId())).singleElement()
                 .satisfies(event -> assertThat(event.getEventType()).isEqualTo("CANCELLATION_CONFIRMED"));
+    }
+
+    @Test
+    void notifyTrialEndingSoonWritesExactlyOneTrialEndingSoonOutboxEventAndMarksTheSubscriptionNotified() {
+        UUID proPlanId = planRepository.findByCode("pro").orElseThrow().getId();
+        SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
+                proPlanId, "trial-ending-soon-it-" + UUID.randomUUID() + "@example.com", null, true, "gw_tok_abc123", "corr-it-41"));
+        Instant notifiedAt = Instant.parse("2026-08-30T00:00:00Z");
+
+        subscriptionService.notifyTrialEndingSoon(signup.subscriptionId(), notifiedAt);
+
+        Subscription persisted = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow();
+        assertThat(persisted.getTrialEndingSoonNotifiedAt()).isEqualTo(notifiedAt);
+        assertThat(outboxEventsFor(signup.subscriptionId())).singleElement().satisfies(event -> {
+            assertThat(event.getEventType()).isEqualTo("TRIAL_ENDING_SOON");
+        });
     }
 }

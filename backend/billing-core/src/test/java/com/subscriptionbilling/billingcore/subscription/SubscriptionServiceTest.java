@@ -29,6 +29,7 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -975,6 +976,39 @@ class SubscriptionServiceTest {
 
         assertThatThrownBy(() -> service().scheduleRetry(subscriptionId, LocalDate.of(2026, 8, 23)))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void notifyTrialEndingSoonMarksTheSubscriptionNotifiedAndWritesATrialEndingSoonOutboxEventWithNoAuditLogEntry() {
+        UUID subscriptionId = UUID.randomUUID();
+        Instant trialEndsAt = FIXED_NOW.plus(Duration.ofDays(2));
+        Subscription subscription = Subscription.startTrial(
+                subscriptionId, new Customer(UUID.randomUUID(), "trialist@example.com"), proPlan, trialEndsAt);
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        service().notifyTrialEndingSoon(subscriptionId, FIXED_NOW);
+
+        assertThat(subscription.getTrialEndingSoonNotifiedAt()).isEqualTo(FIXED_NOW);
+        verify(subscriptionRepository).saveAndFlush(subscription);
+        verify(auditLogEntryRepository, never()).append(any());
+
+        ArgumentCaptor<OutboxEvent> outboxEvent = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outboxEventRepository).save(outboxEvent.capture());
+        assertThat(outboxEvent.getValue().getEventType()).isEqualTo("TRIAL_ENDING_SOON");
+        assertThat(outboxEvent.getValue().getPayload())
+                .contains(subscriptionId.toString())
+                .contains(trialEndsAt.toString());
+    }
+
+    @Test
+    void notifyTrialEndingSoonOfANonexistentSubscriptionFailsFastInsteadOfSilentlyNoOping() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().notifyTrialEndingSoon(subscriptionId, FIXED_NOW))
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(outboxEventRepository);
     }
 
     @Test

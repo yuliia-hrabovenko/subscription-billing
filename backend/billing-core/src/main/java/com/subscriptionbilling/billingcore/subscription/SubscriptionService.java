@@ -469,6 +469,29 @@ public class SubscriptionService {
     }
 
     /**
+     * Records a trial-ending-soon notification for a trialing Subscription approaching
+     * its Trial end, driven by the billing job's daily scan. System-triggered, like
+     * {@link #suspend}: no authenticated Customer, no Idempotency-Key. No {@link
+     * com.subscriptionbilling.audit.AuditLogEntry} is written, since {@code state} does
+     * not change — same reasoning as {@link #scheduleRetry}. The scan's own candidate
+     * query is the guard against re-notifying on a later run, not anything checked here.
+     *
+     * @param subscriptionId the Subscription to notify
+     * @param notifiedAt     the instant this notification was enqueued, recorded via
+     *                       {@link Subscription#markTrialEndingSoonNotified} and carried
+     *                       in the written {@link OutboxEvent}'s payload
+     */
+    @Transactional
+    public void notifyTrialEndingSoon(UUID subscriptionId, Instant notifiedAt) {
+        Subscription subscription = subscriptionRepository.findById(subscriptionId)
+                .orElseThrow(() -> new IllegalStateException("Subscription " + subscriptionId + " does not exist"));
+        subscription.markTrialEndingSoonNotified(notifiedAt);
+        subscriptionRepository.saveAndFlush(subscription);
+        outboxEventRepository.save(new OutboxEvent(UUID.randomUUID(), "TRIAL_ENDING_SOON",
+                trialEndingSoonPayload(subscriptionId, subscription.getTrialEndsAt())));
+    }
+
+    /**
      * Shared skeleton behind {@link #cancel} and {@link #undoCancel}.
      *
      * <p>An {@code idempotencyKey} is recorded (committed, independent of this method's
@@ -516,6 +539,10 @@ public class SubscriptionService {
 
     private static String cancellationConfirmedPayload(UUID subscriptionId, UUID customerId) {
         return "{\"subscriptionId\":\"" + subscriptionId + "\",\"customerId\":\"" + customerId + "\"}";
+    }
+
+    private static String trialEndingSoonPayload(UUID subscriptionId, Instant trialEndsAt) {
+        return "{\"subscriptionId\":\"" + subscriptionId + "\",\"trialEndsAt\":\"" + trialEndsAt + "\"}";
     }
 
     private Subscription ownedSubscription(UUID subscriptionId, UUID authenticatedCustomerId) {

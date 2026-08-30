@@ -4,6 +4,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -34,4 +35,23 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
      */
     @Query("select s.id from Subscription s where s.dueDate <= :asOf")
     List<UUID> findDueSubscriptionIds(@Param("asOf") LocalDate asOf);
+
+    /**
+     * Backs the trial-ending-soon daily scan's candidate selection. {@code state} is
+     * always passed as {@link SubscriptionState#TRIALING}: a Subscription that has since
+     * converted or been canceled is no longer in that state, so it drops out on its own
+     * with no separate exclusion needed. {@code trialEndingSoonNotifiedAt is null} is
+     * this query's whole guard against re-selecting an already-notified Subscription on a
+     * later run.
+     *
+     * @param state           always {@link SubscriptionState#TRIALING}
+     * @param leadTimeCutoff  the latest {@code trialEndsAt} to select (now plus the lead
+     *                        time)
+     * @return the ids of every trialing Subscription approaching its Trial end that
+     *         hasn't already been notified
+     */
+    @Query("select s.id from Subscription s where s.state = :state and s.trialEndsAt <= :leadTimeCutoff "
+            + "and s.trialEndingSoonNotifiedAt is null")
+    List<UUID> findTrialsEndingSoonIds(@Param("state") SubscriptionState state,
+                                        @Param("leadTimeCutoff") Instant leadTimeCutoff);
 }

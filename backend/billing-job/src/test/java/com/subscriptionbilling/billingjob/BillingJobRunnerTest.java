@@ -15,7 +15,9 @@ import com.subscriptionbilling.billingjob.invoicing.ChargeRecordingPort;
 import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
 import com.subscriptionbilling.billingjob.planchange.PendingPlanChangeOutcome;
 import com.subscriptionbilling.billingjob.planchange.PendingPlanChangePort;
+import com.subscriptionbilling.billingjob.trial.TrialEndingSoonPort;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -33,6 +35,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -40,10 +43,12 @@ import static org.mockito.Mockito.when;
 /**
  * Unit coverage of {@link BillingJobRunner}: it resolves today's date from its {@link
  * Clock}, drives one charge attempt per Subscription {@link DueSubscriptionsPort}
- * selects for it, and records/advances only on a successful charge. Whether the
- * due-date comparison, charge-detail loading, or the recording/advancing ports'
- * persistence is correct against real data is each port implementation's own contract,
- * covered where that implementation lives.
+ * selects for it, and records/advances only on a successful charge; separately, it
+ * drives one notification attempt per Subscription {@link TrialEndingSoonPort} selects
+ * as approaching its Trial end. Whether the due-date/trial-end comparisons, charge-detail
+ * loading, or the recording/advancing/notifying ports' persistence is correct against
+ * real data is each port implementation's own contract, covered where that
+ * implementation lives.
  */
 @ExtendWith(MockitoExtension.class)
 class BillingJobRunnerTest {
@@ -72,7 +77,18 @@ class BillingJobRunnerTest {
     @Mock
     private DunningHandoff dunningHandoff;
 
+    @Mock
+    private TrialEndingSoonPort trialEndingSoonPort;
+
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+
+    @BeforeEach
+    void noTrialsEndingSoonByDefault() {
+        // Every run() call reaches the trial-ending-soon step regardless of what a given
+        // test is exercising -- an unstubbed mock would return null here and NPE the
+        // for-each. A test proving that step's own behavior overrides this.
+        lenient().when(trialEndingSoonPort.findTrialsEndingSoon(any())).thenReturn(List.of());
+    }
 
     private BillingJobRunner runner() {
         // A plain instance wrapping this test's own mocks, not a separately mocked
@@ -85,7 +101,7 @@ class BillingJobRunnerTest {
         DunningRetryCharge dunningRetryCharge = new DunningRetryCharge(paymentGatewayClient, chargeOutcomeApplier);
         return new BillingJobRunner(dueSubscriptionsPort, pendingPlanChangePort, chargeableSubscriptionPort,
                 paymentGatewayClient, chargeRecordingPort, dunningRetryCharge, chargeOutcomeApplier,
-                meterRegistry, FIXED_CLOCK);
+                trialEndingSoonPort, meterRegistry, FIXED_CLOCK);
     }
 
     @Test
@@ -454,6 +470,72 @@ class BillingJobRunnerTest {
 
         verify(chargeRecordingPort, never()).invoiceAlreadyRecorded(any(), any());
         verify(paymentGatewayClient).charge(any(), any());
+    }
+
+    @Test
+    void runScansForTrialsEndingSoonUsingACutoffThreeDaysAheadOfNow() {
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of());
+
+        runner().run();
+
+        verify(trialEndingSoonPort).findTrialsEndingSoon(FIXED_CLOCK.instant().plus(java.time.Duration.ofDays(3)));
+    }
+
+    @Test
+    void aTrialEndingSoonCandidateIsNotifiedAndCountsAsSent() {
+        UUID subscriptionId = UUID.randomUUID();
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of());
+        when(trialEndingSoonPort.findTrialsEndingSoon(any())).thenReturn(List.of(subscriptionId));
+
+        runner().run();
+
+        verify(trialEndingSoonPort).notifyTrialEndingSoon(subscriptionId, FIXED_CLOCK.instant());
+        assertThat(meterRegistry.get("billing_job_trial_ending_soon_notifications_sent_total").counter().count())
+                .isEqualTo(1.0);
+    }
+
+    @Test
+    void everyTrialEndingSoonCandidateIsNotified() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of());
+        when(trialEndingSoonPort.findTrialsEndingSoon(any())).thenReturn(List.of(first, second));
+
+        runner().run();
+
+        verify(trialEndingSoonPort).notifyTrialEndingSoon(first, FIXED_CLOCK.instant());
+        verify(trialEndingSoonPort).notifyTrialEndingSoon(second, FIXED_CLOCK.instant());
+    }
+
+    @Test
+    void oneTrialEndingSoonNotificationThrowingDoesNotPreventTheOthersOrTheDueSubscriptionIdsFromBeingReturned() {
+        UUID dueSubscriptionId = UUID.randomUUID();
+        UUID failingCandidate = UUID.randomUUID();
+        UUID healthyCandidate = UUID.randomUUID();
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(dueSubscriptionId));
+        when(chargeableSubscriptionPort.loadForCharge(dueSubscriptionId)).thenReturn(chargeable(dueSubscriptionId));
+        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(trialEndingSoonPort.findTrialsEndingSoon(any())).thenReturn(List.of(failingCandidate, healthyCandidate));
+        org.mockito.Mockito.doThrow(new IllegalStateException("boom"))
+                .when(trialEndingSoonPort).notifyTrialEndingSoon(eq(failingCandidate), any());
+
+        List<UUID> selected = runner().run();
+
+        assertThat(selected).containsExactly(dueSubscriptionId);
+        verify(trialEndingSoonPort).notifyTrialEndingSoon(healthyCandidate, FIXED_CLOCK.instant());
+        assertThat(meterRegistry.get("billing_job_trial_ending_soon_notifications_sent_total").counter().count())
+                .isEqualTo(1.0);
+        assertThat(meterRegistry.get("billing_job_trial_ending_soon_notification_failures_total").counter().count())
+                .isEqualTo(1.0);
+    }
+
+    @Test
+    void noTrialEndingSoonCandidatesNotifiesNoOne() {
+        when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of());
+
+        runner().run();
+
+        verify(trialEndingSoonPort, never()).notifyTrialEndingSoon(any(), any());
     }
 
     private ChargeableSubscription chargeable(UUID subscriptionId) {
