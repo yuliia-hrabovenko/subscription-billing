@@ -1,0 +1,10 @@
+{
+  "type": "record",
+  "name": "TrialEndingSoonEvent",
+  "namespace": "com.subscriptionbilling.notifications.relay.avro",
+  "fields": [
+    { "name": "eventId", "type": "string" },
+    { "name": "subscriptionId", "type": "string" },
+    { "name": "trialEndsAt", "type": "string" }
+  ]
+}

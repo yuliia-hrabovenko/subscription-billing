@@ -32,6 +32,15 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
 
+  # Avro schema registry for the notifications outbox-to-Kafka relay (ticket #37).
+  # In-memory storage (no APICURIO_STORAGE_KIND set) -- dev-only, schemas are not
+  # persisted across restarts.
+  schema-registry:
+    image: quay.io/apicurio/apicurio-registry:3.2.0
+    container_name: subscription-billing-schema-registry
+    ports:
+      - "8081:8080"
+
   redis:
     image: redis:7-alpine
     container_name: subscription-billing-redis

@@ -11,6 +11,21 @@ spring:
       ddl-auto: validate
   flyway:
     enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.apicurio.registry.serde.avro.AvroKafkaSerializer
+    properties:
+      "[apicurio.registry.url]": ${SCHEMA_REGISTRY_URL:http://localhost:8081/apis/registry/v3}
+      # Dev convenience: schemas self-register on first publish. A real environment
+      # should pre-register schemas out-of-band and flip this to false so an
+      # unregistered/incompatible schema fails loudly instead of silently registering.
+      "[apicurio.registry.auto-register]": true
+
+notifications:
+  relay:
+    poll-interval-ms: ${OUTBOX_RELAY_POLL_INTERVAL_MS:5000}
 
 billing:
   security:
