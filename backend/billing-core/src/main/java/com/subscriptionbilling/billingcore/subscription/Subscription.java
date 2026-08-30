@@ -53,6 +53,13 @@ public class Subscription {
     @Column(name = "trial_ends_at")
     private Instant trialEndsAt;
 
+    /**
+     * Unset until the trial-ending-soon daily scan notifies this Subscription once; see
+     * {@link #markTrialEndingSoonNotified}.
+     */
+    @Column(name = "trial_ending_soon_notified_at")
+    private Instant trialEndingSoonNotifiedAt;
+
     @Column(name = "billing_cycle_anchor")
     private Instant billingCycleAnchor;
 
@@ -397,6 +404,17 @@ public class Subscription {
         this.dueDate = nextDueDate;
     }
 
+    /**
+     * Records that a trial-ending-soon notification was sent, so the daily scan's own
+     * candidate query — which filters on this field being unset — never re-selects this
+     * Subscription on a later run before the Trial converts or is canceled.
+     *
+     * @param notifiedAt the instant this notification was enqueued
+     */
+    public void markTrialEndingSoonNotified(Instant notifiedAt) {
+        this.trialEndingSoonNotifiedAt = notifiedAt;
+    }
+
     public UUID getId() {
         return id;
     }
@@ -423,6 +441,10 @@ public class Subscription {
 
     public Instant getTrialEndsAt() {
         return trialEndsAt;
+    }
+
+    public Instant getTrialEndingSoonNotifiedAt() {
+        return trialEndingSoonNotifiedAt;
     }
 
     public Instant getBillingCycleAnchor() {
