@@ -94,7 +94,7 @@ public class SubscriptionController {
     public SubscriptionResponse retryPayment(@PathVariable UUID id, @AuthenticationPrincipal Jwt jwt,
                                               @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         UUID authenticatedCustomerId = UUID.fromString(jwt.getSubject());
-        subscriptionService.retryPayment(id, authenticatedCustomerId, idempotencyKey);
+        subscriptionService.retryPayment(id, authenticatedCustomerId, idempotencyKey, CorrelationIds.current());
         SubscriptionView view = subscriptionService.getOwnSubscription(id, authenticatedCustomerId);
         return SubscriptionResponse.from(view);
     }

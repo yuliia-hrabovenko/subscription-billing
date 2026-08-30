@@ -12,6 +12,7 @@ import com.subscriptionbilling.billingcore.plan.PlanCatalogService;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
 import com.subscriptionbilling.billingcore.plan.PlanSummary;
 import com.subscriptionbilling.billingcore.plan.PlanUnavailableForSignupException;
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
@@ -331,36 +332,41 @@ public class SubscriptionService {
 
     /**
      * Cancels a {@code suspended} Subscription whose Dunning retries are exhausted
-     * (the 3rd scheduled retry's failure), per {@link Subscription#cancel()}'s {@code
-     * suspended -> canceled} edge. System-triggered, like {@link #suspend}: no
-     * authenticated Customer, no Idempotency-Key.
+     * (the 3rd retry's failure, scheduled or self-service), per {@link
+     * Subscription#cancel()}'s {@code suspended -> canceled} edge. No authenticated
+     * Customer, no Idempotency-Key, regardless of trigger.
      *
      * @param subscriptionId the Subscription to cancel
      * @param correlationId  rides along on the written {@link
      *                       com.subscriptionbilling.audit.AuditLogEntry}
+     * @param trigger        who the exhausting attempt was triggered by, attributing the
+     *                       written {@link com.subscriptionbilling.audit.AuditLogEntry}
+     *                       {@code ActorType.CUSTOMER} for a self-service retry or
+     *                       {@code ActorType.SYSTEM} for the billing job's scheduled loop
      * @throws SubscriptionAlreadyPendingCancellationException if a cancellation is
      *         already pending
      * @throws SubscriptionAlreadyCanceledException            if already {@code canceled}
      */
     @Transactional
-    public void cancelForDunningExhaustion(UUID subscriptionId, String correlationId) {
+    public void cancelForDunningExhaustion(UUID subscriptionId, String correlationId, ChargeTrigger trigger) {
         Subscription subscription = subscriptionRepository.findById(subscriptionId)
                 .orElseThrow(() -> new IllegalStateException("Subscription " + subscriptionId + " does not exist"));
         SubscriptionState oldState = subscription.getState();
         subscription.cancel();
         subscriptionRepository.saveAndFlush(subscription);
+        ActorType actorType = trigger == ChargeTrigger.CUSTOMER ? ActorType.CUSTOMER : ActorType.SYSTEM;
         auditLogEntryRepository.append(new AuditLogEntry(
-                UUID.randomUUID(), subscription.getId(), ActorType.SYSTEM, oldState.name(),
+                UUID.randomUUID(), subscription.getId(), actorType, oldState.name(),
                 subscription.getState().name(), correlationId));
     }
 
     /**
      * Cancels a Subscription directly in response to a disputed charge, per {@link
      * Subscription#cancelForDispute()}'s {@code active -> canceled} and {@code
-     * suspended -> canceled} edges. System-triggered, like {@link #suspend}: no
-     * authenticated Customer, no Idempotency-Key — redelivery safety for the triggering
-     * webhook event is the caller's responsibility (event-id deduplication), not this
-     * method's.
+     * suspended -> canceled} edges. Gateway-triggered, like {@link #suspend} is
+     * system-triggered: no authenticated Customer, no Idempotency-Key — redelivery
+     * safety for the triggering webhook event is the caller's responsibility (event-id
+     * deduplication), not this method's.
      *
      * <p>Already {@code canceled} is a safe no-op: returns without writing a second
      * {@link com.subscriptionbilling.audit.AuditLogEntry} or touching persistence, so a
@@ -370,8 +376,9 @@ public class SubscriptionService {
      * — same reasoning as {@link #cancel}'s suspended-origin handling.
      *
      * @param subscriptionId the Subscription to cancel
-     * @param correlationId  rides along on the written {@link
-     *                       com.subscriptionbilling.audit.AuditLogEntry}
+     * @param correlationId  the triggering webhook event's id, rides along on the
+     *                       written {@link com.subscriptionbilling.audit.AuditLogEntry},
+     *                       attributed {@code ActorType.GATEWAY}
      * @throws SubscriptionNotEligibleForDisputeCancellationException if currently
      *         {@code trialing} or {@code pending_cancellation}
      */
@@ -388,7 +395,7 @@ public class SubscriptionService {
         subscription.cancelForDispute();
         subscriptionRepository.saveAndFlush(subscription);
         auditLogEntryRepository.append(new AuditLogEntry(
-                UUID.randomUUID(), subscription.getId(), ActorType.SYSTEM, oldState.name(),
+                UUID.randomUUID(), subscription.getId(), ActorType.GATEWAY, oldState.name(),
                 subscription.getState().name(), correlationId));
         if (stillOpenBillingPeriod != null) {
             invoiceCancellationPort.failStillOpenInvoice(subscriptionId, stillOpenBillingPeriod);
@@ -435,6 +442,10 @@ public class SubscriptionService {
      * @param authenticatedCustomerId the Customer the caller's bearer token identifies
      * @param idempotencyKey          the client-supplied {@code Idempotency-Key} header
      *                                value, or null/blank if none was sent
+     * @param correlationId           the request's correlation id, carried onto a
+     *                                resulting recovery's {@link
+     *                                com.subscriptionbilling.audit.AuditLogEntry},
+     *                                attributed {@code ActorType.CUSTOMER}
      * @throws SubscriptionAccessDeniedException  if the Subscription doesn't exist or
      *         doesn't belong to this Customer
      * @throws SubscriptionNotSuspendedException  if not currently {@code suspended}
@@ -442,7 +453,8 @@ public class SubscriptionService {
      *         transiently — never thrown for a business decline, which is a normal
      *         recorded outcome, not a rejection
      */
-    public void retryPayment(UUID subscriptionId, UUID authenticatedCustomerId, String idempotencyKey) {
+    public void retryPayment(UUID subscriptionId, UUID authenticatedCustomerId, String idempotencyKey,
+                              String correlationId) {
         Subscription subscription = ownedSubscription(subscriptionId, authenticatedCustomerId);
         boolean hasIdempotencyKey = StringUtils.hasText(idempotencyKey);
         if (hasIdempotencyKey
@@ -455,12 +467,8 @@ public class SubscriptionService {
         }
 
         ChargeableSubscription chargeable = chargeableSubscriptionPort.loadForCharge(subscriptionId);
-        // A fresh id per call, not the request's correlationId: this attempt's resulting
-        // AuditLogEntry (if any) is attributed ActorType.SYSTEM regardless of trigger,
-        // same as the billing job's own retries -- self-service attribution is out of
-        // this method's scope.
         DunningRetryChargeResult result = dunningRetryCharge.attempt(
-                subscriptionId, chargeable, Instant.now(clock), UUID.randomUUID().toString());
+                subscriptionId, chargeable, Instant.now(clock), correlationId, ChargeTrigger.CUSTOMER);
         if (result instanceof DunningRetryChargeResult.FailedTransiently transientFailure) {
             releaseIfPresent(hasIdempotencyKey, authenticatedCustomerId, idempotencyKey);
             throw new PaymentGatewayUnavailableException(transientFailure.reason());

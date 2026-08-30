@@ -1,5 +1,6 @@
 package com.subscriptionbilling.billingcore.subscription;
 
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import com.subscriptionbilling.dunning.SubscriptionSuspensionPort;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
@@ -38,7 +39,7 @@ public class SubscriptionSuspensionAdapter implements SubscriptionSuspensionPort
     }
 
     @Override
-    public void cancel(UUID subscriptionId, String correlationId) {
-        subscriptionService.cancelForDunningExhaustion(subscriptionId, correlationId);
+    public void cancel(UUID subscriptionId, String correlationId, ChargeTrigger trigger) {
+        subscriptionService.cancelForDunningExhaustion(subscriptionId, correlationId, trigger);
     }
 }

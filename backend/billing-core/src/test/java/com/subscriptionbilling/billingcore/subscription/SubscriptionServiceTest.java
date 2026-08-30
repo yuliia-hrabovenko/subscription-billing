@@ -12,6 +12,7 @@ import com.subscriptionbilling.billingcore.plan.PlanCatalogService;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
 import com.subscriptionbilling.billingcore.plan.PlanSummary;
 import com.subscriptionbilling.billingcore.plan.PlanUnavailableForSignupException;
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
@@ -841,7 +842,7 @@ class SubscriptionServiceTest {
         subscription.suspend(LocalDate.of(2026, 8, 1));
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
 
-        service().cancelForDunningExhaustion(subscriptionId, "corr-exhaust-1");
+        service().cancelForDunningExhaustion(subscriptionId, "corr-exhaust-1", ChargeTrigger.SYSTEM);
 
         assertThat(subscription.getState()).isEqualTo(SubscriptionState.CANCELED);
         verify(subscriptionRepository).saveAndFlush(subscription);
@@ -858,13 +859,28 @@ class SubscriptionServiceTest {
     }
 
     @Test
+    void cancelForDunningExhaustionFromASelfServiceRetryWritesACustomerAuditLogEntry() {
+        UUID subscriptionId = UUID.randomUUID();
+        Subscription subscription = Subscription.startPaidImmediately(
+                subscriptionId, new Customer(UUID.randomUUID(), "exhausted-self-service@example.com"), proPlan, FIXED_NOW);
+        subscription.suspend(LocalDate.of(2026, 8, 1));
+        when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
+
+        service().cancelForDunningExhaustion(subscriptionId, "corr-exhaust-4", ChargeTrigger.CUSTOMER);
+
+        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.CUSTOMER);
+    }
+
+    @Test
     void cancelForDunningExhaustionOnAnAlreadyCanceledSubscriptionIsRejectedAndWritesNoAuditLogEntry() {
         UUID subscriptionId = UUID.randomUUID();
         Subscription subscription = new Subscription(
                 subscriptionId, new Customer(UUID.randomUUID(), "already-canceled@example.com"), proPlan, SubscriptionState.CANCELED);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
 
-        assertThatThrownBy(() -> service().cancelForDunningExhaustion(subscriptionId, "corr-exhaust-2"))
+        assertThatThrownBy(() -> service().cancelForDunningExhaustion(subscriptionId, "corr-exhaust-2", ChargeTrigger.SYSTEM))
                 .isInstanceOf(SubscriptionAlreadyCanceledException.class);
 
         verify(subscriptionRepository, never()).saveAndFlush(any());
@@ -877,7 +893,7 @@ class SubscriptionServiceTest {
         UUID subscriptionId = UUID.randomUUID();
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service().cancelForDunningExhaustion(subscriptionId, "corr-exhaust-3"))
+        assertThatThrownBy(() -> service().cancelForDunningExhaustion(subscriptionId, "corr-exhaust-3", ChargeTrigger.SYSTEM))
                 .isInstanceOf(IllegalStateException.class);
 
         verify(auditLogEntryRepository, never()).append(any());
@@ -885,7 +901,7 @@ class SubscriptionServiceTest {
     }
 
     @Test
-    void cancelForDisputeFromActiveTransitionsImmediatelyToCanceledAndWritesASystemAuditLogEntry() {
+    void cancelForDisputeFromActiveTransitionsImmediatelyToCanceledAndWritesAGatewayAuditLogEntry() {
         UUID subscriptionId = UUID.randomUUID();
         Subscription subscription = Subscription.startPaidImmediately(
                 subscriptionId, new Customer(UUID.randomUUID(), "disputed@example.com"), proPlan, FIXED_NOW);
@@ -899,7 +915,7 @@ class SubscriptionServiceTest {
 
         ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditLogEntryRepository).append(auditEntry.capture());
-        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.SYSTEM);
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.GATEWAY);
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
         assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-dispute-1");
@@ -922,6 +938,7 @@ class SubscriptionServiceTest {
 
         ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.GATEWAY);
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("SUSPENDED");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
         verifyNoInteractions(outboxEventRepository);
@@ -1034,12 +1051,14 @@ class SubscriptionServiceTest {
                 subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 1), 1, true);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
-        when(dunningRetryCharge.attempt(eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), any(String.class)))
+        when(dunningRetryCharge.attempt(
+                eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), eq("corr-retry-1"), eq(ChargeTrigger.CUSTOMER)))
                 .thenReturn(new DunningRetryChargeResult.Recovered("gw-txn-1"));
 
-        service().retryPayment(subscriptionId, customerId, null);
+        service().retryPayment(subscriptionId, customerId, null, "corr-retry-1");
 
-        verify(dunningRetryCharge).attempt(eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), any(String.class));
+        verify(dunningRetryCharge).attempt(
+                eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), eq("corr-retry-1"), eq(ChargeTrigger.CUSTOMER));
     }
 
     @Test
@@ -1050,7 +1069,7 @@ class SubscriptionServiceTest {
                 subscriptionId, new Customer(customerId, "active@example.com"), proPlan, FIXED_NOW);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
 
-        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, null))
+        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, null, "corr-retry-2"))
                 .isInstanceOf(SubscriptionNotSuspendedException.class);
 
         verifyNoInteractions(chargeableSubscriptionPort, dunningRetryCharge);
@@ -1063,7 +1082,7 @@ class SubscriptionServiceTest {
                 new Customer(UUID.randomUUID(), "owner@example.com"), proPlan, SubscriptionState.SUSPENDED);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
 
-        assertThatThrownBy(() -> service().retryPayment(subscriptionId, UUID.randomUUID(), null))
+        assertThatThrownBy(() -> service().retryPayment(subscriptionId, UUID.randomUUID(), null, "corr-retry-3"))
                 .isInstanceOf(SubscriptionAccessDeniedException.class);
 
         verifyNoInteractions(chargeableSubscriptionPort, dunningRetryCharge);
@@ -1079,7 +1098,7 @@ class SubscriptionServiceTest {
         when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-1"))
                 .thenReturn(false);
 
-        service().retryPayment(subscriptionId, customerId, "key-1");
+        service().retryPayment(subscriptionId, customerId, "key-1", "corr-retry-4");
 
         verifyNoInteractions(chargeableSubscriptionPort, dunningRetryCharge);
     }
@@ -1094,7 +1113,7 @@ class SubscriptionServiceTest {
         when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-2"))
                 .thenReturn(true);
 
-        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, "key-2"))
+        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, "key-2", "corr-retry-5"))
                 .isInstanceOf(SubscriptionNotSuspendedException.class);
 
         verify(idempotencyService).release(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-2");
@@ -1112,10 +1131,11 @@ class SubscriptionServiceTest {
         when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-3"))
                 .thenReturn(true);
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
-        when(dunningRetryCharge.attempt(eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), any(String.class)))
+        when(dunningRetryCharge.attempt(
+                eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), any(String.class), eq(ChargeTrigger.CUSTOMER)))
                 .thenReturn(new DunningRetryChargeResult.FailedTransiently("gateway_timeout"));
 
-        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, "key-3"))
+        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, "key-3", "corr-retry-6"))
                 .isInstanceOf(PaymentGatewayUnavailableException.class);
 
         verify(idempotencyService).release(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-3");
@@ -1133,10 +1153,11 @@ class SubscriptionServiceTest {
         when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-4"))
                 .thenReturn(true);
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
-        when(dunningRetryCharge.attempt(eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), any(String.class)))
+        when(dunningRetryCharge.attempt(
+                eq(subscriptionId), eq(chargeable), eq(FIXED_NOW), any(String.class), eq(ChargeTrigger.CUSTOMER)))
                 .thenReturn(new DunningRetryChargeResult.Declined(DunningRetryOutcome.RESCHEDULED, "card_declined"));
 
-        service().retryPayment(subscriptionId, customerId, "key-4");
+        service().retryPayment(subscriptionId, customerId, "key-4", "corr-retry-7");
 
         // A decline is a normal recorded outcome, not a rejection of the request itself
         // -- the key stays consumed so a client retry of the exact same request doesn't
@@ -1152,7 +1173,7 @@ class SubscriptionServiceTest {
                 subscriptionId, new Customer(customerId, "active@example.com"), proPlan, FIXED_NOW);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
 
-        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, null))
+        assertThatThrownBy(() -> service().retryPayment(subscriptionId, customerId, null, "corr-retry-8"))
                 .isInstanceOf(SubscriptionNotSuspendedException.class);
 
         verifyNoInteractions(idempotencyService);

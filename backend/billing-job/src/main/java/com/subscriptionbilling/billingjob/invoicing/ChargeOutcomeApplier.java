@@ -1,5 +1,6 @@
 package com.subscriptionbilling.billingjob.invoicing;
 
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import com.subscriptionbilling.billingjob.anchor.AnchorDate;
 import com.subscriptionbilling.billingjob.anchor.BillingCycleAdvancePort;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
@@ -50,13 +51,15 @@ public class ChargeOutcomeApplier {
      * @param correlationId        the triggering caller's correlation id, carried onto
      *                             the resulting {@code AuditLogEntry} if this success
      *                             transitions the Subscription's state
+     * @param trigger              who this charge attempt was triggered by, carried onto
+     *                             the resulting {@code AuditLogEntry}'s attribution
      */
     public void applySuccess(UUID subscriptionId, ChargeableSubscription chargeable, String gatewayTransactionId,
-                              Instant attemptedAt, String correlationId) {
+                              Instant attemptedAt, String correlationId, ChargeTrigger trigger) {
         chargeRecordingPort.recordSuccessfulCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), gatewayTransactionId, attemptedAt);
         LocalDate nextDueDate = new AnchorDate(chargeable.anchorDayOfMonth()).next(chargeable.billingPeriod());
-        billingCycleAdvancePort.advanceDueDate(subscriptionId, nextDueDate, correlationId);
+        billingCycleAdvancePort.advanceDueDate(subscriptionId, nextDueDate, correlationId, trigger);
     }
 
     /**
@@ -92,14 +95,17 @@ public class ChargeOutcomeApplier {
      * @param attemptedAt      the instant the gateway resolved the charge
      * @param correlationId    the triggering caller's correlation id, carried onto a
      *                         resulting cancellation's {@code AuditLogEntry}
+     * @param trigger          who this charge attempt was triggered by, carried onto a
+     *                         resulting cancellation's {@code AuditLogEntry} attribution
      * @return whether the retry bound was reached (the Subscription was canceled) or the
      *         next Dunning offset was scheduled
      */
     public DunningRetryOutcome applyRetryFailure(UUID subscriptionId, ChargeableSubscription chargeable,
-                                                  String gatewayReference, Instant attemptedAt, String correlationId) {
+                                                  String gatewayReference, Instant attemptedAt, String correlationId,
+                                                  ChargeTrigger trigger) {
         UUID invoiceId = chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), gatewayReference, attemptedAt);
         DunningRetryState retryState = chargeRecordingPort.recordRetryAttempt(invoiceId);
-        return dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, attemptedAt, correlationId);
+        return dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, attemptedAt, correlationId, trigger);
     }
 }

@@ -1,5 +1,6 @@
 package com.subscriptionbilling.billingcore.subscription;
 
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -47,8 +48,8 @@ class SubscriptionSuspensionAdapterTest {
     void cancelDelegatesToSubscriptionServiceCancelForDunningExhaustion() {
         UUID subscriptionId = UUID.randomUUID();
 
-        new SubscriptionSuspensionAdapter(subscriptionService).cancel(subscriptionId, "corr-2");
+        new SubscriptionSuspensionAdapter(subscriptionService).cancel(subscriptionId, "corr-2", ChargeTrigger.CUSTOMER);
 
-        verify(subscriptionService).cancelForDunningExhaustion(subscriptionId, "corr-2");
+        verify(subscriptionService).cancelForDunningExhaustion(subscriptionId, "corr-2", ChargeTrigger.CUSTOMER);
     }
 }

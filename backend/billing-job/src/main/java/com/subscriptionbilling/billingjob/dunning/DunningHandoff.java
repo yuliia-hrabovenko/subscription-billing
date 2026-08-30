@@ -1,5 +1,6 @@
 package com.subscriptionbilling.billingjob.dunning;
 
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
 
 import java.time.Instant;
@@ -40,8 +41,11 @@ public interface DunningHandoff {
      * @param failedAt       the instant the gateway resolved this failed try
      * @param correlationId  the triggering caller's correlation id, carried onto a
      *                       resulting cancellation's {@code AuditLogEntry}
+     * @param trigger        who this failed attempt was triggered by (the billing job's
+     *                       scheduled loop or a self-service retry), carried onto a
+     *                       resulting cancellation's {@code AuditLogEntry} attribution
      * @return whether the Subscription was canceled (retries exhausted) or rescheduled
      */
     DunningRetryOutcome onRetryFailed(UUID subscriptionId, UUID invoiceId, DunningRetryState retryState, Instant failedAt,
-                                       String correlationId);
+                                       String correlationId, ChargeTrigger trigger);
 }

@@ -273,7 +273,8 @@ public class BillingJobRunner {
 
     private void handleSuccess(UUID subscriptionId, ChargeableSubscription chargeable,
                                 ChargeResult.Succeeded succeeded, Instant attemptedAt, String correlationId) {
-        chargeOutcomeApplier.applySuccess(subscriptionId, chargeable, succeeded.gatewayTransactionId(), attemptedAt, correlationId);
+        chargeOutcomeApplier.applySuccess(subscriptionId, chargeable, succeeded.gatewayTransactionId(), attemptedAt,
+                correlationId, ChargeTrigger.SYSTEM);
         subscriptionsProcessed.increment();
     }
 
@@ -293,7 +294,8 @@ public class BillingJobRunner {
     private void handleDunningRetryCharge(UUID subscriptionId, ChargeableSubscription chargeable, Instant attemptedAt,
                                            String correlationId) {
         dunningAttempts.increment();
-        DunningRetryChargeResult result = dunningRetryCharge.attempt(subscriptionId, chargeable, attemptedAt, correlationId);
+        DunningRetryChargeResult result =
+                dunningRetryCharge.attempt(subscriptionId, chargeable, attemptedAt, correlationId, ChargeTrigger.SYSTEM);
         switch (result) {
             case DunningRetryChargeResult.Recovered recovered -> {
                 dunningRecoveries.increment();

@@ -1,5 +1,6 @@
 package com.subscriptionbilling.billingjob.dunning;
 
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.gateway.ChargeResult;
 import com.subscriptionbilling.billingjob.gateway.PaymentGatewayClient;
@@ -47,23 +48,27 @@ public class DunningRetryCharge {
      * @param attemptedAt    the instant this charge attempt is made
      * @param correlationId  the triggering caller's correlation id, carried onto any
      *                       resulting {@code AuditLogEntry}
+     * @param trigger        who this attempt was triggered by (the billing job's
+     *                       scheduled loop or a self-service retry), carried onto a
+     *                       resulting recovery's or cancellation's {@code AuditLogEntry}
+     *                       attribution
      * @return the resolved outcome
      * @throws com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException
      *         if recording this attempt lost a race to a concurrent recording of the
      *         same Invoice
      */
     public DunningRetryChargeResult attempt(UUID subscriptionId, ChargeableSubscription chargeable, Instant attemptedAt,
-                                             String correlationId) {
+                                             String correlationId, ChargeTrigger trigger) {
         ChargeResult result = paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.amount());
         return switch (result) {
             case ChargeResult.Succeeded succeeded -> {
-                chargeOutcomeApplier.applySuccess(
-                        subscriptionId, chargeable, succeeded.gatewayTransactionId(), attemptedAt, correlationId);
+                chargeOutcomeApplier.applySuccess(subscriptionId, chargeable, succeeded.gatewayTransactionId(),
+                        attemptedAt, correlationId, trigger);
                 yield new DunningRetryChargeResult.Recovered(succeeded.gatewayTransactionId());
             }
             case ChargeResult.Declined declined -> {
-                DunningRetryOutcome outcome = chargeOutcomeApplier.applyRetryFailure(
-                        subscriptionId, chargeable, declined.gatewayReference(), attemptedAt, correlationId);
+                DunningRetryOutcome outcome = chargeOutcomeApplier.applyRetryFailure(subscriptionId, chargeable,
+                        declined.gatewayReference(), attemptedAt, correlationId, trigger);
                 yield new DunningRetryChargeResult.Declined(outcome, declined.reason());
             }
             case ChargeResult.FailedTransiently transientFailure ->

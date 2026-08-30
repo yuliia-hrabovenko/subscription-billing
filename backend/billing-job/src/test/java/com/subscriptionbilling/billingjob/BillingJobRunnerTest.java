@@ -142,7 +142,8 @@ class BillingJobRunnerTest {
         verify(chargeRecordingPort).recordSuccessfulCharge(
                 eq(subscriptionId), eq(LocalDate.of(2026, 1, 31)), eq(chargeable.priceVersionId()),
                 eq("gw-txn-1"), eq(FIXED_CLOCK.instant()));
-        verify(billingCycleAdvancePort).advanceDueDate(eq(subscriptionId), eq(LocalDate.of(2026, 2, 28)), any());
+        verify(billingCycleAdvancePort).advanceDueDate(
+                eq(subscriptionId), eq(LocalDate.of(2026, 2, 28)), any(), eq(ChargeTrigger.SYSTEM));
     }
 
     @Test
@@ -161,7 +162,8 @@ class BillingJobRunnerTest {
 
         runner().run();
 
-        verify(billingCycleAdvancePort).advanceDueDate(eq(subscriptionId), eq(LocalDate.of(2026, 9, 21)), any());
+        verify(billingCycleAdvancePort).advanceDueDate(
+                eq(subscriptionId), eq(LocalDate.of(2026, 9, 21)), any(), eq(ChargeTrigger.SYSTEM));
     }
 
     @Test
@@ -203,7 +205,7 @@ class BillingJobRunnerTest {
         verify(dunningHandoff).onChargeFailed(
                 eq(subscriptionId), eq(invoiceId), eq(chargeable.billingPeriod()), eq(FIXED_CLOCK.instant()), any());
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
-        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
+        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
         assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(1.0);
     }
@@ -219,7 +221,7 @@ class BillingJobRunnerTest {
 
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
         verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any(), any());
-        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
+        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any(), any());
         verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_declined_charges_total").counter().count()).isEqualTo(0.0);
     }
@@ -290,7 +292,7 @@ class BillingJobRunnerTest {
         runner().run();
 
         verify(paymentGatewayClient, never()).charge(any(), any());
-        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
+        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any(), any());
         verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
     }
@@ -327,7 +329,7 @@ class BillingJobRunnerTest {
 
         runner().run();
 
-        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any());
+        verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
         assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_charge_attempt_failures_total").counter().count()).isEqualTo(0.0);
@@ -407,7 +409,7 @@ class BillingJobRunnerTest {
 
         verify(chargeRecordingPort).recordSuccessfulCharge(eq(subscriptionId), eq(retryChargeable.billingPeriod()),
                 any(), eq("gw-txn-1"), any());
-        verify(billingCycleAdvancePort).advanceDueDate(eq(subscriptionId), any(), any());
+        verify(billingCycleAdvancePort).advanceDueDate(eq(subscriptionId), any(), any(), eq(ChargeTrigger.SYSTEM));
         assertThat(meterRegistry.get("billing_job_dunning_attempts_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_dunning_recoveries_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
@@ -425,13 +427,15 @@ class BillingJobRunnerTest {
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, retryChargeable.billingPeriod(),
                 retryChargeable.priceVersionId(), null, FIXED_CLOCK.instant())).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
-        when(dunningHandoff.onRetryFailed(eq(subscriptionId), eq(invoiceId), eq(retryState), eq(FIXED_CLOCK.instant()), any()))
+        when(dunningHandoff.onRetryFailed(
+                eq(subscriptionId), eq(invoiceId), eq(retryState), eq(FIXED_CLOCK.instant()), any(), eq(ChargeTrigger.SYSTEM)))
                 .thenReturn(DunningRetryOutcome.RESCHEDULED);
 
         runner().run();
 
         verify(chargeRecordingPort).recordRetryAttempt(invoiceId);
-        verify(dunningHandoff).onRetryFailed(eq(subscriptionId), eq(invoiceId), eq(retryState), eq(FIXED_CLOCK.instant()), any());
+        verify(dunningHandoff).onRetryFailed(
+                eq(subscriptionId), eq(invoiceId), eq(retryState), eq(FIXED_CLOCK.instant()), any(), eq(ChargeTrigger.SYSTEM));
         verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_dunning_attempts_total").counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get("billing_job_dunning_exhaustions_total").counter().count()).isEqualTo(0.0);
@@ -450,7 +454,8 @@ class BillingJobRunnerTest {
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, retryChargeable.billingPeriod(),
                 retryChargeable.priceVersionId(), null, FIXED_CLOCK.instant())).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
-        when(dunningHandoff.onRetryFailed(eq(subscriptionId), eq(invoiceId), eq(retryState), eq(FIXED_CLOCK.instant()), any()))
+        when(dunningHandoff.onRetryFailed(
+                eq(subscriptionId), eq(invoiceId), eq(retryState), eq(FIXED_CLOCK.instant()), any(), eq(ChargeTrigger.SYSTEM)))
                 .thenReturn(DunningRetryOutcome.CANCELED);
 
         runner().run();
@@ -499,7 +504,8 @@ class BillingJobRunnerTest {
         ArgumentCaptor<String> suspensionCorrelationId = ArgumentCaptor.forClass(String.class);
         verify(dunningHandoff).onChargeFailed(eq(suspending), any(), any(), any(), suspensionCorrelationId.capture());
         ArgumentCaptor<String> recoveryCorrelationId = ArgumentCaptor.forClass(String.class);
-        verify(billingCycleAdvancePort).advanceDueDate(eq(recovering), any(), recoveryCorrelationId.capture());
+        verify(billingCycleAdvancePort).advanceDueDate(
+                eq(recovering), any(), recoveryCorrelationId.capture(), eq(ChargeTrigger.SYSTEM));
 
         assertThat(suspensionCorrelationId.getValue()).isEqualTo(recoveryCorrelationId.getValue());
     }
