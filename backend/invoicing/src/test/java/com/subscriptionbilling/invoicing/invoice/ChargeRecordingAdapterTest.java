@@ -126,11 +126,8 @@ class ChargeRecordingAdapterTest {
                 .thenReturn(Optional.empty());
         when(invoiceRepository.saveAndFlush(any(Invoice.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService)
+        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService, outboxEventRepository)
                 .recordFailedCharge(subscriptionId, billingPeriod, priceVersionId, "gw-declined-1", attemptedAt);
-
-//        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService, outboxEventRepository)
-//                .recordFailedCharge(subscriptionId, billingPeriod, priceVersionId, attemptedAt);
 
         ArgumentCaptor<Invoice> invoiceCaptor = ArgumentCaptor.forClass(Invoice.class);
         verify(invoiceRepository).saveAndFlush(invoiceCaptor.capture());
@@ -157,10 +154,8 @@ class ChargeRecordingAdapterTest {
         when(invoiceRepository.findBySubscriptionIdAndBillingPeriod(subscriptionId, billingPeriod))
                 .thenReturn(Optional.of(existingInvoice));
 
-        UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService)
-                .recordFailedCharge(subscriptionId, billingPeriod, existingInvoice.getPriceVersionId(), null, attemptedAt);
         UUID invoiceId = new ChargeRecordingAdapter(invoiceRepository, paymentAttemptRepository, receiptRenderingService, outboxEventRepository)
-                .recordFailedCharge(subscriptionId, billingPeriod, existingInvoice.getPriceVersionId(), attemptedAt);
+                .recordFailedCharge(subscriptionId, billingPeriod, existingInvoice.getPriceVersionId(), null, attemptedAt);
 
         assertThat(invoiceId).isEqualTo(existingInvoice.getId());
         verify(invoiceRepository, never()).saveAndFlush(any());
@@ -263,7 +258,7 @@ class ChargeRecordingAdapterTest {
         when(paymentAttemptRepository.findFirstByGatewayReference("gw-unknown")).thenReturn(Optional.empty());
 
         Optional<RecordedChargeOutcome> outcome = new ChargeRecordingAdapter(
-                invoiceRepository, paymentAttemptRepository, receiptRenderingService)
+                invoiceRepository, paymentAttemptRepository, receiptRenderingService, outboxEventRepository)
                 .findRecordedOutcome("gw-unknown");
 
         assertThat(outcome).isEmpty();
@@ -277,7 +272,7 @@ class ChargeRecordingAdapterTest {
         when(paymentAttemptRepository.findFirstByGatewayReference("gw-txn-1")).thenReturn(Optional.of(attempt));
 
         Optional<RecordedChargeOutcome> outcome = new ChargeRecordingAdapter(
-                invoiceRepository, paymentAttemptRepository, receiptRenderingService)
+                invoiceRepository, paymentAttemptRepository, receiptRenderingService, outboxEventRepository)
                 .findRecordedOutcome("gw-txn-1");
 
         assertThat(outcome).contains(RecordedChargeOutcome.SUCCEEDED);
@@ -291,7 +286,7 @@ class ChargeRecordingAdapterTest {
         when(paymentAttemptRepository.findFirstByGatewayReference("gw-declined-1")).thenReturn(Optional.of(attempt));
 
         Optional<RecordedChargeOutcome> outcome = new ChargeRecordingAdapter(
-                invoiceRepository, paymentAttemptRepository, receiptRenderingService)
+                invoiceRepository, paymentAttemptRepository, receiptRenderingService, outboxEventRepository)
                 .findRecordedOutcome("gw-declined-1");
 
         assertThat(outcome).contains(RecordedChargeOutcome.FAILED);
