@@ -196,7 +196,9 @@ class SubscriptionServiceTest {
 
         ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.CUSTOMER);
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("TRIALING");
+        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-5");
     }
 
     @Test
@@ -222,7 +224,9 @@ class SubscriptionServiceTest {
 
         ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.CUSTOMER);
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("ACTIVE");
+        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-6");
     }
 
     @Test
@@ -303,6 +307,7 @@ class SubscriptionServiceTest {
 
         ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.CUSTOMER);
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("TRIALING");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
         assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-cancel-1");
@@ -328,8 +333,10 @@ class SubscriptionServiceTest {
 
         ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.CUSTOMER);
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("PENDING_CANCELLATION");
+        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-cancel-2");
 
         // The deferred branch still confirms the request was recorded, not that the
         // Subscription has reached canceled.
@@ -353,8 +360,10 @@ class SubscriptionServiceTest {
 
         ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.CUSTOMER);
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("CANCELED");
+        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-cancel-2b");
         verify(outboxEventRepository).save(any(OutboxEvent.class));
     }
 
@@ -540,8 +549,10 @@ class SubscriptionServiceTest {
 
         ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.CUSTOMER);
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("PENDING_CANCELLATION");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("ACTIVE");
+        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-undo-1");
         // Undoing a cancellation is not itself a cancellation-confirmed trigger.
         verifyNoInteractions(outboxEventRepository);
     }
@@ -611,6 +622,7 @@ class SubscriptionServiceTest {
 
         ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditLogEntryRepository).append(auditEntry.capture());
+        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.CUSTOMER);
         assertThat(auditEntry.getValue().getOldState()).isEqualTo("ACTIVE");
         assertThat(auditEntry.getValue().getNewState()).isEqualTo("ACTIVE");
         assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-plan-1");
