@@ -20,7 +20,7 @@ import org.testcontainers.utility.DockerImageName;
  */
 
 @Testcontainers(disabledWithoutDocker = true)
-@Import(PaymentGatewayTestConfig.class)
+@Import({PaymentGatewayTestConfig.class, MeterRegistryTestConfig.class})
 public abstract class AbstractPostgresIntegrationTest {
 
     @ServiceConnection

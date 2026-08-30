@@ -1,5 +1,6 @@
 package com.subscriptionbilling.billingcore.subscription;
 
+import com.subscriptionbilling.audit.ActorType;
 import com.subscriptionbilling.audit.AuditLogEntry;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
 import com.subscriptionbilling.billingcore.customer.Customer;
@@ -83,6 +84,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
 
         List<AuditLogEntry> entries = auditLogEntryRepository.findBySubscriptionId(result.subscriptionId());
         assertThat(entries).singleElement().satisfies(entry -> {
+            assertThat(entry.getActorType()).isEqualTo(ActorType.CUSTOMER);
             assertThat(entry.getOldState()).isNull();
             assertThat(entry.getNewState()).isEqualTo("ACTIVE");
             assertThat(entry.getCorrelationId()).isEqualTo("corr-it-1");
