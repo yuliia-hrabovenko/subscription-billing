@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "PaymentFailedEvent",
+  "namespace": "com.subscriptionbilling.notifications.relay.avro",
+  "fields": [
+    { "name": "eventId", "type": "string" },
+    { "name": "subscriptionId", "type": "string" },
+    { "name": "billingPeriod", "type": "string" },
+    { "name": "invoiceId", "type": "string" }
+  ]
+}

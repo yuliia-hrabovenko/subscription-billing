@@ -3,3 +3,11 @@ spring:
     open-in-view: false
     hibernate:
       ddl-auto: validate
+
+notifications:
+  relay:
+    # Large enough that OutboxRelay#poll()'s @Scheduled trigger never fires during a
+    # test -- tests call OutboxRelay#pollAndPublish() directly instead, so a
+    # background poll racing a test's own assertions would just be a source of
+    # flakiness, not coverage.
+    poll-interval-ms: 3600000
