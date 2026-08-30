@@ -1,5 +1,7 @@
 package com.subscriptionbilling.dunning;
 
+import com.subscriptionbilling.billingjob.ChargeTrigger;
+
 import java.time.LocalDate;
 import java.util.UUID;
 
@@ -42,6 +44,10 @@ public interface SubscriptionSuspensionPort {
      * @param subscriptionId the Subscription to cancel
      * @param correlationId  a caller-supplied identifier for tracing this cancellation
      *                       back to what triggered it
+     * @param trigger        who the failed attempt that exhausted the bound was
+     *                       triggered by, so the resulting cancellation is attributed
+     *                       correctly regardless of whether that was a scheduled or a
+     *                       self-service retry
      */
-    void cancel(UUID subscriptionId, String correlationId);
+    void cancel(UUID subscriptionId, String correlationId, ChargeTrigger trigger);
 }

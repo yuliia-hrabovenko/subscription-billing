@@ -1,5 +1,6 @@
 package com.subscriptionbilling.billingjob.reconciliation;
 
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.invoicing.ChargeAlreadyRecordedException;
@@ -108,10 +109,10 @@ public class PaymentOutcomeReconciler {
         // correlation key (see class Javadoc).
         if (reportedOutcome == RecordedChargeOutcome.SUCCEEDED) {
             chargeOutcomeApplier.applySuccess(
-                    subscriptionId, chargeable, gatewayReference, occurredAt, gatewayReference);
+                    subscriptionId, chargeable, gatewayReference, occurredAt, gatewayReference, ChargeTrigger.SYSTEM);
         } else if (chargeable.dunningRetry()) {
             chargeOutcomeApplier.applyRetryFailure(
-                    subscriptionId, chargeable, gatewayReference, occurredAt, gatewayReference);
+                    subscriptionId, chargeable, gatewayReference, occurredAt, gatewayReference, ChargeTrigger.SYSTEM);
         } else {
             chargeOutcomeApplier.applyFirstFailure(
                     subscriptionId, chargeable, gatewayReference, occurredAt, gatewayReference);

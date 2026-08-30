@@ -5,6 +5,7 @@ import com.subscriptionbilling.audit.AuditLogEntry;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
 import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.plan.Plan;
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -57,7 +58,7 @@ class BillingCycleAdvanceAdapterTest {
                 Instant.parse("2026-01-31T00:00:00Z"), LocalDate.of(2026, 7, 31));
         when(subscriptionRepository.findById(subscription.getId())).thenReturn(Optional.of(subscription));
 
-        adapter().advanceDueDate(subscription.getId(), LocalDate.of(2026, 8, 31), "gw-txn-1");
+        adapter().advanceDueDate(subscription.getId(), LocalDate.of(2026, 8, 31), "gw-txn-1", ChargeTrigger.SYSTEM);
 
         assertThat(subscription.getDueDate()).isEqualTo(LocalDate.of(2026, 8, 31));
         assertThat(subscription.getState()).isEqualTo(SubscriptionState.ACTIVE);
@@ -66,12 +67,12 @@ class BillingCycleAdvanceAdapterTest {
     }
 
     @Test
-    void advancingADueTrialingSubscriptionActivatesItOpensTheBillingCycleAndAppendsAnAuditEntry() {
+    void advancingADueTrialingSubscriptionActivatesItOpensTheBillingCycleAndAppendsASystemAuditEntry() {
         Subscription subscription = Subscription.startTrial(UUID.randomUUID(), customer, plan, Instant.now());
         subscription.advanceDueDate(LocalDate.of(2026, 8, 24));
         when(subscriptionRepository.findById(subscription.getId())).thenReturn(Optional.of(subscription));
 
-        adapter().advanceDueDate(subscription.getId(), LocalDate.of(2026, 9, 24), "gw-txn-trial");
+        adapter().advanceDueDate(subscription.getId(), LocalDate.of(2026, 9, 24), "gw-txn-trial", ChargeTrigger.SYSTEM);
 
         assertThat(subscription.getState()).isEqualTo(SubscriptionState.ACTIVE);
         assertThat(subscription.getBillingCycleAnchor()).isEqualTo(CHARGED_AT);
@@ -90,11 +91,32 @@ class BillingCycleAdvanceAdapterTest {
     }
 
     @Test
+    void advancingADueSuspendedSubscriptionViaASelfServiceRetryRestoresItAndAppendsACustomerAuditEntry() {
+        Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, plan, Instant.now());
+        subscription.suspend(LocalDate.of(2026, 8, 1));
+        when(subscriptionRepository.findById(subscription.getId())).thenReturn(Optional.of(subscription));
+
+        adapter().advanceDueDate(subscription.getId(), LocalDate.of(2026, 9, 1), "corr-retry-1", ChargeTrigger.CUSTOMER);
+
+        assertThat(subscription.getState()).isEqualTo(SubscriptionState.ACTIVE);
+        verify(subscriptionRepository).saveAndFlush(subscription);
+
+        ArgumentCaptor<AuditLogEntry> entryCaptor = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLogEntryRepository).append(entryCaptor.capture());
+        AuditLogEntry entry = entryCaptor.getValue();
+        assertThat(entry.getActorType()).isEqualTo(ActorType.CUSTOMER);
+        assertThat(entry.getOldState()).isEqualTo("SUSPENDED");
+        assertThat(entry.getNewState()).isEqualTo("ACTIVE");
+        assertThat(entry.getCorrelationId()).isEqualTo("corr-retry-1");
+    }
+
+    @Test
     void failsFastWhenTheSubscriptionDoesNotExist() {
         UUID subscriptionId = UUID.randomUUID();
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> adapter().advanceDueDate(subscriptionId, LocalDate.of(2026, 8, 31), "gw-txn-1"))
+        assertThatThrownBy(() -> adapter().advanceDueDate(
+                subscriptionId, LocalDate.of(2026, 8, 31), "gw-txn-1", ChargeTrigger.SYSTEM))
                 .isInstanceOf(IllegalStateException.class);
     }
 }

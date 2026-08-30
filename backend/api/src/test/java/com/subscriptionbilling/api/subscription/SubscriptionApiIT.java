@@ -2,6 +2,7 @@ package com.subscriptionbilling.api.subscription;
 
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
 import com.subscriptionbilling.api.support.PaymentGatewayTestConfig;
+import com.subscriptionbilling.audit.ActorType;
 import com.subscriptionbilling.audit.AuditLogEntry;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
 import com.subscriptionbilling.billingcore.customer.Customer;
@@ -634,6 +635,7 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
 
         mvc.post().uri("/api/v1/subscriptions/{id}/retry-payment", owner.subscriptionId())
                 .header("Authorization", "Bearer " + owner.accessToken())
+                .header("X-Correlation-Id", "corr-retry-success-1")
                 .assertThat()
                 .hasStatusOk()
                 .bodyJson()
@@ -649,6 +651,17 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
                 .findBySubscriptionIdAndBillingPeriod(owner.subscriptionId(), LocalDate.now(ZoneOffset.UTC))
                 .orElseThrow();
         assertThat(invoice.getStatus()).isEqualTo(InvoiceStatus.PAID);
+
+        // The self-service retry's recovery (suspended -> active) is attributed to the
+        // Customer and carries the request's own correlation id, unlike the preceding
+        // signup and system-triggered suspension entries for this same Subscription.
+        List<AuditLogEntry> entries = auditLogEntryRepository.findBySubscriptionId(owner.subscriptionId());
+        assertThat(entries).filteredOn(entry -> "ACTIVE".equals(entry.getNewState()) && "SUSPENDED".equals(entry.getOldState()))
+                .singleElement()
+                .satisfies(entry -> {
+                    assertThat(entry.getActorType()).isEqualTo(ActorType.CUSTOMER);
+                    assertThat(entry.getCorrelationId()).isEqualTo("corr-retry-success-1");
+                });
     }
 
     @Test

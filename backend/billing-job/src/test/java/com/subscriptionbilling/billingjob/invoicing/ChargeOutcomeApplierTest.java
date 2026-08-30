@@ -1,5 +1,6 @@
 package com.subscriptionbilling.billingjob.invoicing;
 
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import com.subscriptionbilling.billingjob.anchor.BillingCycleAdvancePort;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.dunning.DunningHandoff;
@@ -49,11 +50,21 @@ class ChargeOutcomeApplierTest {
         UUID subscriptionId = UUID.randomUUID();
         ChargeableSubscription chargeable = chargeable(subscriptionId);
 
-        applier().applySuccess(subscriptionId, chargeable, "gw-txn-1", ATTEMPTED_AT, "corr-1");
+        applier().applySuccess(subscriptionId, chargeable, "gw-txn-1", ATTEMPTED_AT, "corr-1", ChargeTrigger.SYSTEM);
 
         verify(chargeRecordingPort).recordSuccessfulCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), "gw-txn-1", ATTEMPTED_AT);
-        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2027, 2, 8), "corr-1");
+        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2027, 2, 8), "corr-1", ChargeTrigger.SYSTEM);
+    }
+
+    @Test
+    void applySuccessForwardsTheCustomerTriggerToTheBillingCycleAdvance() {
+        UUID subscriptionId = UUID.randomUUID();
+        ChargeableSubscription chargeable = chargeable(subscriptionId);
+
+        applier().applySuccess(subscriptionId, chargeable, "gw-txn-2", ATTEMPTED_AT, "corr-1", ChargeTrigger.CUSTOMER);
+
+        verify(billingCycleAdvancePort).advanceDueDate(subscriptionId, LocalDate.of(2027, 2, 8), "corr-1", ChargeTrigger.CUSTOMER);
     }
 
     @Test
@@ -78,13 +89,31 @@ class ChargeOutcomeApplierTest {
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), "gw-declined-2", ATTEMPTED_AT)).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
-        when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, ATTEMPTED_AT, "corr-3"))
+        when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, ATTEMPTED_AT, "corr-3", ChargeTrigger.SYSTEM))
                 .thenReturn(DunningRetryOutcome.RESCHEDULED);
 
-        DunningRetryOutcome outcome =
-                applier().applyRetryFailure(subscriptionId, chargeable, "gw-declined-2", ATTEMPTED_AT, "corr-3");
+        DunningRetryOutcome outcome = applier().applyRetryFailure(
+                subscriptionId, chargeable, "gw-declined-2", ATTEMPTED_AT, "corr-3", ChargeTrigger.SYSTEM);
 
         assertThat(outcome).isEqualTo(DunningRetryOutcome.RESCHEDULED);
         verify(chargeRecordingPort).recordRetryAttempt(invoiceId);
+    }
+
+    @Test
+    void applyRetryFailureForwardsTheCustomerTriggerToOnRetryFailed() {
+        UUID subscriptionId = UUID.randomUUID();
+        UUID invoiceId = UUID.randomUUID();
+        ChargeableSubscription chargeable = chargeable(subscriptionId);
+        DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 3, true);
+        when(chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
+                chargeable.priceVersionId(), "gw-declined-3", ATTEMPTED_AT)).thenReturn(invoiceId);
+        when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
+        when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, ATTEMPTED_AT, "corr-4", ChargeTrigger.CUSTOMER))
+                .thenReturn(DunningRetryOutcome.CANCELED);
+
+        applier().applyRetryFailure(
+                subscriptionId, chargeable, "gw-declined-3", ATTEMPTED_AT, "corr-4", ChargeTrigger.CUSTOMER);
+
+        verify(dunningHandoff).onRetryFailed(subscriptionId, invoiceId, retryState, ATTEMPTED_AT, "corr-4", ChargeTrigger.CUSTOMER);
     }
 }

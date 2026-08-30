@@ -2,6 +2,7 @@ package com.subscriptionbilling.api.webhook;
 
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
 import com.subscriptionbilling.api.support.CountingPaymentGatewayClient;
+import com.subscriptionbilling.audit.ActorType;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
 import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.customer.CustomerRepository;
@@ -197,7 +198,10 @@ class WebhookIngestionIT extends AbstractPostgresIntegrationTest {
 
         assertThat(subscriptionRepository.findById(subscriptionId).orElseThrow().getState())
                 .isEqualTo(SubscriptionState.CANCELED);
-        assertThat(auditLogEntryRepository.findBySubscriptionId(subscriptionId)).hasSize(1);
+        assertThat(auditLogEntryRepository.findBySubscriptionId(subscriptionId)).singleElement().satisfies(entry -> {
+            assertThat(entry.getActorType()).isEqualTo(ActorType.GATEWAY);
+            assertThat(entry.getCorrelationId()).isEqualTo(eventId);
+        });
     }
 
     private double counter(String name) {

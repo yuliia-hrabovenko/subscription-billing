@@ -1,5 +1,6 @@
 package com.subscriptionbilling.dunning;
 
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
 import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
 import org.junit.jupiter.api.Test;
@@ -82,11 +83,12 @@ class SuspendAndScheduleRetryDunningHandoffTest {
         DunningRetryState retryState = new DunningRetryState(originalFailureAt, 1, false);
 
         DunningRetryOutcome outcome = new SuspendAndScheduleRetryDunningHandoff(subscriptionSuspensionPort)
-                .onRetryFailed(subscriptionId, invoiceId, retryState, Instant.parse("2027-01-02T10:00:00Z"), "corr-2");
+                .onRetryFailed(subscriptionId, invoiceId, retryState, Instant.parse("2027-01-02T10:00:00Z"),
+                        "corr-2", ChargeTrigger.SYSTEM);
 
         assertThat(outcome).isEqualTo(DunningRetryOutcome.RESCHEDULED);
         verify(subscriptionSuspensionPort).scheduleRetry(subscriptionId, LocalDate.of(2027, 1, 4));
-        verify(subscriptionSuspensionPort, never()).cancel(any(), any());
+        verify(subscriptionSuspensionPort, never()).cancel(any(), any(), any());
     }
 
     @Test
@@ -97,7 +99,8 @@ class SuspendAndScheduleRetryDunningHandoffTest {
         DunningRetryState retryState = new DunningRetryState(originalFailureAt, 2, false);
 
         DunningRetryOutcome outcome = new SuspendAndScheduleRetryDunningHandoff(subscriptionSuspensionPort)
-                .onRetryFailed(subscriptionId, invoiceId, retryState, Instant.parse("2027-01-04T10:00:00Z"), "corr-2");
+                .onRetryFailed(subscriptionId, invoiceId, retryState, Instant.parse("2027-01-04T10:00:00Z"),
+                        "corr-2", ChargeTrigger.SYSTEM);
 
         assertThat(outcome).isEqualTo(DunningRetryOutcome.RESCHEDULED);
         verify(subscriptionSuspensionPort).scheduleRetry(subscriptionId, LocalDate.of(2027, 1, 8));
@@ -110,10 +113,24 @@ class SuspendAndScheduleRetryDunningHandoffTest {
         DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 3, true);
 
         DunningRetryOutcome outcome = new SuspendAndScheduleRetryDunningHandoff(subscriptionSuspensionPort)
-                .onRetryFailed(subscriptionId, invoiceId, retryState, Instant.parse("2027-01-08T10:00:00Z"), "corr-3");
+                .onRetryFailed(subscriptionId, invoiceId, retryState, Instant.parse("2027-01-08T10:00:00Z"),
+                        "corr-3", ChargeTrigger.SYSTEM);
 
         assertThat(outcome).isEqualTo(DunningRetryOutcome.CANCELED);
-        verify(subscriptionSuspensionPort).cancel(subscriptionId, "corr-3");
+        verify(subscriptionSuspensionPort).cancel(subscriptionId, "corr-3", ChargeTrigger.SYSTEM);
         verify(subscriptionSuspensionPort, never()).scheduleRetry(any(), any());
+    }
+
+    @Test
+    void onRetryFailedWithTheRetryBoundReachedForwardsTheCustomerTriggerToCancel() {
+        UUID subscriptionId = UUID.randomUUID();
+        UUID invoiceId = UUID.randomUUID();
+        DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 3, true);
+
+        new SuspendAndScheduleRetryDunningHandoff(subscriptionSuspensionPort)
+                .onRetryFailed(subscriptionId, invoiceId, retryState, Instant.parse("2027-01-08T10:00:00Z"),
+                        "corr-4", ChargeTrigger.CUSTOMER);
+
+        verify(subscriptionSuspensionPort).cancel(subscriptionId, "corr-4", ChargeTrigger.CUSTOMER);
     }
 }

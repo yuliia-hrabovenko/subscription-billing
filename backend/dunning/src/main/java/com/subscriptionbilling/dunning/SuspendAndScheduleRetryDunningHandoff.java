@@ -1,5 +1,6 @@
 package com.subscriptionbilling.dunning;
 
+import com.subscriptionbilling.billingjob.ChargeTrigger;
 import com.subscriptionbilling.billingjob.dunning.DunningHandoff;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
 import com.subscriptionbilling.billingjob.invoicing.DunningRetryState;
@@ -70,12 +71,14 @@ public class SuspendAndScheduleRetryDunningHandoff implements DunningHandoff {
      *                       original failure, not to this attempt)
      * @param correlationId  the triggering caller's correlation id, passed through as a
      *                       resulting cancellation's correlation id
+     * @param trigger        who this failed attempt was triggered by, passed through as
+     *                       a resulting cancellation's attribution
      */
     @Override
     public DunningRetryOutcome onRetryFailed(UUID subscriptionId, UUID invoiceId, DunningRetryState retryState,
-                                              Instant failedAt, String correlationId) {
+                                              Instant failedAt, String correlationId, ChargeTrigger trigger) {
         if (retryState.retriesExhausted()) {
-            subscriptionSuspensionPort.cancel(subscriptionId, correlationId);
+            subscriptionSuspensionPort.cancel(subscriptionId, correlationId, trigger);
             return DunningRetryOutcome.CANCELED;
         }
 
