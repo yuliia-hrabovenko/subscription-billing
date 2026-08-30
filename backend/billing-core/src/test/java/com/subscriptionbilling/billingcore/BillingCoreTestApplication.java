@@ -2,7 +2,9 @@ package com.subscriptionbilling.billingcore;
 
 import com.subscriptionbilling.billingjob.BillingJobRunner;
 import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigurationExcludeFilter;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.context.TypeExcludeFilter;
 import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.FilterType;
@@ -31,11 +33,21 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  * classpath; this module's own tests still exercise its adapters
  * ({@link com.subscriptionbilling.billingcore.subscription.DueSubscriptionsAdapter} and
  * friends) directly.
+ *
+ * <p>The other two {@code excludeFilters} entries ({@link TypeExcludeFilter}, {@link
+ * AutoConfigurationExcludeFilter}) are what {@code @SpringBootApplication} normally
+ * supplies by default and what test slices like {@code @DataJpaTest} rely on to exclude
+ * non-repository beans — decomposing the annotation loses them unless restated here too
+ * (see {@code ApiApplication}'s Javadoc for the same point).
  */
 @SpringBootConfiguration
 @EnableAutoConfiguration
 @ComponentScan(basePackages = "com.subscriptionbilling",
-        excludeFilters = @ComponentScan.Filter(type = FilterType.ASSIGNABLE_TYPE, classes = BillingJobRunner.class))
+        excludeFilters = {
+                @ComponentScan.Filter(type = FilterType.CUSTOM, classes = TypeExcludeFilter.class),
+                @ComponentScan.Filter(type = FilterType.CUSTOM, classes = AutoConfigurationExcludeFilter.class),
+                @ComponentScan.Filter(type = FilterType.ASSIGNABLE_TYPE, classes = BillingJobRunner.class)
+        })
 @EntityScan("com.subscriptionbilling")
 @EnableJpaRepositories("com.subscriptionbilling")
 public class BillingCoreTestApplication {

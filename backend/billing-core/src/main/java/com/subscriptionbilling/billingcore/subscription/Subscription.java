@@ -197,11 +197,10 @@ public class Subscription {
         // fails to compile instead of silently no-op'ing at runtime.
         state = switch (state) {
             case TRIALING, SUSPENDED -> {
-                // All cleared: a canceled Subscription never carries any of these,
-                // regardless of which originating state happened to hold them.
                 trialEndsAt = null;
                 billingCycleAnchor = null;
                 dunningBillingPeriod = null;
+                dueDate = null;
                 yield SubscriptionState.CANCELED;
             }
             case ACTIVE -> billingCycleAnchor != null ? SubscriptionState.PENDING_CANCELLATION : SubscriptionState.CANCELED;
@@ -245,6 +244,7 @@ public class Subscription {
                 trialEndsAt = null;
                 billingCycleAnchor = null;
                 dunningBillingPeriod = null;
+                dueDate = null;
                 yield SubscriptionState.CANCELED;
             }
             case CANCELED -> SubscriptionState.CANCELED;

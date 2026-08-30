@@ -17,6 +17,8 @@ import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryChargeResult;
 import com.subscriptionbilling.billingjob.invoicing.InvoiceCancellationPort;
+import com.subscriptionbilling.notifications.outbox.OutboxEvent;
+import com.subscriptionbilling.notifications.outbox.OutboxEventRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,6 +29,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -68,6 +71,7 @@ public class SubscriptionService {
     private final ChargeableSubscriptionPort chargeableSubscriptionPort;
     private final DunningRetryCharge dunningRetryCharge;
     private final InvoiceCancellationPort invoiceCancellationPort;
+    private final OutboxEventRepository outboxEventRepository;
     private final Clock clock;
 
     @Autowired
@@ -75,17 +79,19 @@ public class SubscriptionService {
                                 SubscriptionRepository subscriptionRepository, PlanCatalogService planCatalogService,
                                 AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
                                 IdempotencyService idempotencyService, ChargeableSubscriptionPort chargeableSubscriptionPort,
-                                DunningRetryCharge dunningRetryCharge, InvoiceCancellationPort invoiceCancellationPort) {
+                                DunningRetryCharge dunningRetryCharge, InvoiceCancellationPort invoiceCancellationPort,
+                                OutboxEventRepository outboxEventRepository) {
         this(customerRepository, planRepository, subscriptionRepository, planCatalogService, auditLogEntryRepository,
                 tokenIssuer, idempotencyService, chargeableSubscriptionPort, dunningRetryCharge, invoiceCancellationPort,
-                Clock.systemUTC());
+                outboxEventRepository, Clock.systemUTC());
     }
 
     SubscriptionService(CustomerRepository customerRepository, PlanRepository planRepository,
                          SubscriptionRepository subscriptionRepository, PlanCatalogService planCatalogService,
                          AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
                          IdempotencyService idempotencyService, ChargeableSubscriptionPort chargeableSubscriptionPort,
-                         DunningRetryCharge dunningRetryCharge, InvoiceCancellationPort invoiceCancellationPort, Clock clock) {
+                         DunningRetryCharge dunningRetryCharge, InvoiceCancellationPort invoiceCancellationPort,
+                         OutboxEventRepository outboxEventRepository, Clock clock) {
         this.customerRepository = customerRepository;
         this.planRepository = planRepository;
         this.subscriptionRepository = subscriptionRepository;
@@ -96,6 +102,7 @@ public class SubscriptionService {
         this.chargeableSubscriptionPort = chargeableSubscriptionPort;
         this.dunningRetryCharge = dunningRetryCharge;
         this.invoiceCancellationPort = invoiceCancellationPort;
+        this.outboxEventRepository = outboxEventRepository;
         this.clock = clock;
     }
 
@@ -186,6 +193,11 @@ public class SubscriptionService {
      * before the transition clears it, so this only fires for the {@code suspended}
      * origin — every other origin has no Invoice still open.
      *
+     * <p>A request that actually applies the transition (immediate or deferred alike)
+     * also writes a {@code CANCELLATION_CONFIRMED} {@link OutboxEvent} in the same
+     * transaction, confirming the request was recorded rather than that the Subscription
+     * has reached {@code canceled}. A deduplicated retry writes no second event.
+     *
      * @param subscriptionId          the Subscription to cancel
      * @param authenticatedCustomerId the Customer the caller's bearer token identifies
      * @param idempotencyKey          the client-supplied {@code Idempotency-Key} header
@@ -204,14 +216,20 @@ public class SubscriptionService {
     public SubscriptionView cancel(UUID subscriptionId, UUID authenticatedCustomerId, String idempotencyKey,
                                     String correlationId) {
         AtomicReference<LocalDate> stillOpenBillingPeriod = new AtomicReference<>();
+        AtomicBoolean transitionApplied = new AtomicBoolean(false);
         SubscriptionView view = applyTransition(subscriptionId, authenticatedCustomerId, idempotencyKey, CANCEL_OPERATION,
                 subscription -> {
                     stillOpenBillingPeriod.set(subscription.getDunningBillingPeriod());
                     subscription.cancel();
+                    transitionApplied.set(true);
                 }, correlationId);
         LocalDate billingPeriod = stillOpenBillingPeriod.get();
         if (billingPeriod != null) {
             invoiceCancellationPort.failStillOpenInvoice(subscriptionId, billingPeriod);
+        }
+        if (transitionApplied.get()) {
+            outboxEventRepository.save(new OutboxEvent(UUID.randomUUID(), "CANCELLATION_CONFIRMED",
+                    cancellationConfirmedPayload(subscriptionId, authenticatedCustomerId)));
         }
         return view;
     }
@@ -282,12 +300,18 @@ public class SubscriptionService {
      * Suspends a Subscription immediately, per {@link Subscription#suspend}'s business
      * rule ("first failed charge suspends, no grace period"). Unlike {@link #cancel}/
      * {@link #undoCancel}, this is system-triggered — there is no authenticated
-     * Customer to check ownership against, and no Idempotency-Key.
+     * Customer to check ownership against, and no Idempotency-Key. This is the
+     * Subscription's only path to {@code suspended}, so it runs exactly once per
+     * Invoice — never again for that same Invoice's later Dunning retries, which
+     * reschedule or cancel instead — and also writes a {@code PAYMENT_FAILED} {@link
+     * OutboxEvent} in the same transaction as the suspension, correlated to {@code
+     * correlationId} (the failed Invoice's id).
      *
      * @param subscriptionId the Subscription to suspend
      * @param billingPeriod  the Billing Cycle date whose charge just failed
-     * @param correlationId  rides along on the written {@link
-     *                       com.subscriptionbilling.audit.AuditLogEntry}
+     * @param correlationId  the failed Invoice's id, rides along on the written {@link
+     *                       com.subscriptionbilling.audit.AuditLogEntry} and the
+     *                       written {@link OutboxEvent}'s payload
      * @throws SubscriptionNotEligibleForSuspensionException if not currently {@code
      *         trialing} or {@code active}
      */
@@ -301,6 +325,8 @@ public class SubscriptionService {
         auditLogEntryRepository.append(new AuditLogEntry(
                 UUID.randomUUID(), subscription.getId(), ActorType.SYSTEM, oldState.name(),
                 subscription.getState().name(), correlationId));
+        outboxEventRepository.save(new OutboxEvent(UUID.randomUUID(), "PAYMENT_FAILED",
+                failureAlertPayload(subscriptionId, billingPeriod, correlationId)));
     }
 
     /**
@@ -481,6 +507,15 @@ public class SubscriptionService {
             }
             throw transitionFailed;
         }
+    }
+
+    private static String failureAlertPayload(UUID subscriptionId, LocalDate billingPeriod, String invoiceId) {
+        return "{\"subscriptionId\":\"" + subscriptionId + "\",\"billingPeriod\":\"" + billingPeriod
+                + "\",\"invoiceId\":\"" + invoiceId + "\"}";
+    }
+
+    private static String cancellationConfirmedPayload(UUID subscriptionId, UUID customerId) {
+        return "{\"subscriptionId\":\"" + subscriptionId + "\",\"customerId\":\"" + customerId + "\"}";
     }
 
     private Subscription ownedSubscription(UUID subscriptionId, UUID authenticatedCustomerId) {

@@ -9,12 +9,15 @@ import com.subscriptionbilling.billingcore.idempotency.IdempotencyKeyRepository;
 import com.subscriptionbilling.billingcore.plan.Plan;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
 import com.subscriptionbilling.billingcore.support.AbstractPostgresIntegrationTest;
+import com.subscriptionbilling.notifications.outbox.OutboxEvent;
+import com.subscriptionbilling.notifications.outbox.OutboxEventRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -47,6 +50,15 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private AuditLogEntryRepository auditLogEntryRepository;
+
+    @Autowired
+    private OutboxEventRepository outboxEventRepository;
+
+    private List<OutboxEvent> outboxEventsFor(UUID subscriptionId) {
+        return outboxEventRepository.findAll().stream()
+                .filter(event -> event.getPayload().contains(subscriptionId.toString()))
+                .toList();
+    }
 
     @Test
     void freeSignupPersistsACustomerAnActiveSubscriptionAndExactlyOneAuditLogEntry() {
@@ -177,6 +189,12 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
 
         Subscription persisted = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow();
         assertThat(persisted.getState()).isEqualTo(SubscriptionState.CANCELED);
+
+        List<OutboxEvent> events = outboxEventsFor(signup.subscriptionId());
+        assertThat(events).singleElement().satisfies(event -> {
+            assertThat(event.getEventType()).isEqualTo("CANCELLATION_CONFIRMED");
+            assertThat(event.getPublishedAt()).isNull();
+        });
     }
 
     @Test
@@ -290,6 +308,9 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         // One entry for the signup, one for the (single, deduplicated) cancel.
         assertThat(entries).hasSize(2);
         assertThat(entries).filteredOn(entry -> "PENDING_CANCELLATION".equals(entry.getNewState())).hasSize(1);
+        // Never a second, separate write for the deduplicated retry.
+        assertThat(outboxEventsFor(signup.subscriptionId())).singleElement()
+                .satisfies(event -> assertThat(event.getEventType()).isEqualTo("CANCELLATION_CONFIRMED"));
     }
 
     @Test
@@ -412,5 +433,41 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         // One for the signup, one for the single successful cancel — the stale write
         // never committed, so it never produced a second one.
         assertThat(entries).hasSize(2);
+        // Same for the outbox: the stale write's transaction never committed, so it
+        // produced zero CANCELLATION_CONFIRMED rows alongside the one successful cancel.
+        assertThat(outboxEventsFor(signup.subscriptionId())).singleElement()
+                .satisfies(event -> assertThat(event.getEventType()).isEqualTo("CANCELLATION_CONFIRMED"));
+    }
+
+    @Test
+    void suspendWritesExactlyOnePaymentFailedOutboxEventInTheSameTransactionAsTheSuspension() {
+        UUID proPlanId = planRepository.findByCode("pro").orElseThrow().getId();
+        SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
+                proPlanId, "suspend-it-" + UUID.randomUUID() + "@example.com", null, false, "gw_tok_abc123", "corr-it-37"));
+        UUID invoiceId = UUID.randomUUID();
+
+        subscriptionService.suspend(signup.subscriptionId(), LocalDate.of(2026, 8, 1), invoiceId.toString());
+
+        Subscription persisted = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow();
+        assertThat(persisted.getState()).isEqualTo(SubscriptionState.SUSPENDED);
+        assertThat(outboxEventsFor(signup.subscriptionId())).singleElement().satisfies(event -> {
+            assertThat(event.getEventType()).isEqualTo("PAYMENT_FAILED");
+            assertThat(event.getPayload()).contains(invoiceId.toString());
+        });
+    }
+
+    @Test
+    void aRejectedSuspendOnAnIneligibleStateWritesNoOutboxEvent() {
+        UUID freePlanId = planRepository.findByCode("free").orElseThrow().getId();
+        SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
+                freePlanId, "suspend-reject-it-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-38"));
+        subscriptionService.cancel(signup.subscriptionId(), subscriptionRepository.findById(signup.subscriptionId())
+                .orElseThrow().getCustomer().getId(), null, "corr-it-39");
+
+        assertThatThrownBy(() -> subscriptionService.suspend(signup.subscriptionId(), LocalDate.of(2026, 8, 1), "corr-it-40"))
+                .isInstanceOf(SubscriptionNotEligibleForSuspensionException.class);
+
+        assertThat(outboxEventsFor(signup.subscriptionId())).singleElement()
+                .satisfies(event -> assertThat(event.getEventType()).isEqualTo("CANCELLATION_CONFIRMED"));
     }
 }

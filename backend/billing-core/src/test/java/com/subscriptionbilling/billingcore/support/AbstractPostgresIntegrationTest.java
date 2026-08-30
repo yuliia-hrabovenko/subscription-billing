@@ -1,6 +1,7 @@
 package com.subscriptionbilling.billingcore.support;
 
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.context.annotation.Import;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
@@ -19,6 +20,7 @@ import org.testcontainers.utility.DockerImageName;
  */
 
 @Testcontainers(disabledWithoutDocker = true)
+@Import(PaymentGatewayTestConfig.class)
 public abstract class AbstractPostgresIntegrationTest {
 
     @ServiceConnection
