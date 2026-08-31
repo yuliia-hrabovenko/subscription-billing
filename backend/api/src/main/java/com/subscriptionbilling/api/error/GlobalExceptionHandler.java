@@ -1,5 +1,11 @@
 package com.subscriptionbilling.api.error;
 
+import com.subscriptionbilling.billingcore.auth.AdminAuthenticationException;
+import com.subscriptionbilling.billingcore.customer.CustomerNotFoundException;
+import com.subscriptionbilling.billingcore.customer.InvalidCustomerCursorException;
+import com.subscriptionbilling.billingcore.plan.InvalidPriceVersionException;
+import com.subscriptionbilling.billingcore.plan.PlanCodeAlreadyExistsException;
+import com.subscriptionbilling.billingcore.plan.PlanNotFoundException;
 import com.subscriptionbilling.billingcore.plan.PlanUnavailableForSignupException;
 import com.subscriptionbilling.billingcore.subscription.DuplicateSubscriptionException;
 import com.subscriptionbilling.billingcore.subscription.PaymentGatewayUnavailableException;
@@ -8,10 +14,12 @@ import com.subscriptionbilling.billingcore.subscription.SubscriptionAccessDenied
 import com.subscriptionbilling.billingcore.subscription.SubscriptionAlreadyCanceledException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionAlreadyPendingCancellationException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionNotEligibleForPlanChangeException;
+import com.subscriptionbilling.billingcore.subscription.SubscriptionNotFoundException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionNotPendingCancellationException;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionNotSuspendedException;
 import com.subscriptionbilling.invoicing.invoice.InvalidCursorException;
 import com.subscriptionbilling.invoicing.invoice.InvoiceAccessDeniedException;
+import com.subscriptionbilling.invoicing.invoice.InvoiceNotFoundException;
 import com.subscriptionbilling.invoicing.receipt.ReceiptNotAvailableException;
 import com.subscriptionbilling.webhooks.ingestion.ConflictingPaymentOutcomeException;
 import com.subscriptionbilling.webhooks.ingestion.InvalidWebhookSignatureException;
@@ -91,6 +99,53 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(InvalidCursorException.class)
     public ResponseEntity<Object> handleInvalidCursor(InvalidCursorException ex) {
         return respond(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", ex.getMessage());
+    }
+
+    /** Same reasoning as {@link #handleInvalidCursor}, for the Admin customer list endpoint. */
+    @ExceptionHandler(InvalidCustomerCursorException.class)
+    public ResponseEntity<Object> handleInvalidCustomerCursor(InvalidCustomerCursorException ex) {
+        return respond(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", ex.getMessage());
+    }
+
+    /**
+     * Submitted admin credentials didn't match — 401, the same status a
+     * missing/invalid Customer bearer token gets, since both mean "this caller isn't
+     * who it claims to be."
+     */
+    @ExceptionHandler(AdminAuthenticationException.class)
+    public ResponseEntity<Object> handleAdminAuthentication(AdminAuthenticationException ex) {
+        return respond(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", ex.getMessage());
+    }
+
+    /**
+     * An Admin request targeted a Customer/Subscription/Invoice/Plan id that
+     * doesn't exist. A plain 404, unlike the Customer-facing 403-not-404 conventions
+     * above — an Admin already has full visibility, so there's no ID-enumeration
+     * concern those exist to defend against.
+     */
+    @ExceptionHandler({CustomerNotFoundException.class, SubscriptionNotFoundException.class,
+            InvoiceNotFoundException.class, PlanNotFoundException.class})
+    public ResponseEntity<Object> handleAdminResourceNotFound(RuntimeException ex) {
+        return respond(HttpStatus.NOT_FOUND, "NOT_FOUND", ex.getMessage());
+    }
+
+    /**
+     * An Admin tried to create a Plan whose {@code code} is already in use —
+     * same "dedicated 409 + integrity-violation safety net" pattern as {@link
+     * #handleDuplicateSubscription}.
+     */
+    @ExceptionHandler(PlanCodeAlreadyExistsException.class)
+    public ResponseEntity<Object> handlePlanCodeAlreadyExists(PlanCodeAlreadyExistsException ex) {
+        return respond(HttpStatus.CONFLICT, "PLAN_CODE_ALREADY_EXISTS", ex.getMessage());
+    }
+
+    /**
+     * An Admin's new PriceVersion doesn't come after the Plan's current
+     * latest one — a malformed request, not a conflict with existing data.
+     */
+    @ExceptionHandler(InvalidPriceVersionException.class)
+    public ResponseEntity<Object> handleInvalidPriceVersion(InvalidPriceVersionException ex) {
+        return respond(HttpStatus.BAD_REQUEST, "INVALID_PRICE_VERSION", ex.getMessage());
     }
 
     /**

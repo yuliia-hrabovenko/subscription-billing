@@ -29,6 +29,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -179,6 +180,29 @@ public class SubscriptionService {
     @Transactional(readOnly = true)
     public SubscriptionView getOwnSubscription(UUID subscriptionId, UUID authenticatedCustomerId) {
         return SubscriptionView.from(ownedSubscription(subscriptionId, authenticatedCustomerId));
+    }
+
+    /**
+     * Fetches any Subscription by id for an Admin caller — no ownership
+     * check, unlike {@link #getOwnSubscription}.
+     *
+     * @throws SubscriptionNotFoundException if {@code subscriptionId} doesn't exist
+     */
+    @Transactional(readOnly = true)
+    public AdminSubscriptionView getForAdmin(UUID subscriptionId) {
+        Subscription subscription = subscriptionRepository.findById(subscriptionId)
+                .orElseThrow(() -> new SubscriptionNotFoundException(subscriptionId));
+        return AdminSubscriptionView.from(subscription);
+    }
+
+    /**
+     * Every Subscription a given Customer has ever had, for an Admin's customer-detail
+     * view — no ownership check, and no pagination (see {@link
+     * SubscriptionRepository#findByCustomerId}'s Javadoc for why).
+     */
+    @Transactional(readOnly = true)
+    public List<AdminSubscriptionView> listForCustomerAsAdmin(UUID customerId) {
+        return subscriptionRepository.findByCustomerId(customerId).stream().map(AdminSubscriptionView::from).toList();
     }
 
     /**
