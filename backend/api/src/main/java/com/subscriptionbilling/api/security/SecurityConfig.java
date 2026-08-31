@@ -1,6 +1,7 @@
 package com.subscriptionbilling.api.security;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -11,6 +12,11 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
+import java.util.List;
 
 /**
  * Bearer-JWT authentication via Spring Security's
@@ -35,12 +41,22 @@ public class SecurityConfig {
 
     private final ApiAuthenticationEntryPoint authenticationEntryPoint;
     private final ApiAccessDeniedHandler accessDeniedHandler;
+    private final List<String> allowedOrigins;
+    private final List<String> allowedMethods;
+    private final List<String> allowedHeaders;
 
     @Autowired
     public SecurityConfig(ApiAuthenticationEntryPoint authenticationEntryPoint,
-                           ApiAccessDeniedHandler accessDeniedHandler) {
+                           ApiAccessDeniedHandler accessDeniedHandler,
+                           @Value("${app.cors.allowed-origins:http://localhost:5173}") List<String> allowedOrigins,
+                           @Value("${app.cors.allowed-methods:GET,POST,OPTIONS}") List<String> allowedMethods,
+                           @Value("${app.cors.allowed-headers:Authorization,Content-Type,Idempotency-Key}")
+                           List<String> allowedHeaders) {
         this.authenticationEntryPoint = authenticationEntryPoint;
         this.accessDeniedHandler = accessDeniedHandler;
+        this.allowedOrigins = allowedOrigins;
+        this.allowedMethods = allowedMethods;
+        this.allowedHeaders = allowedHeaders;
     }
 
     @Bean
@@ -50,6 +66,7 @@ public class SecurityConfig {
                 // session cookie) for a forged cross-site request to ride along on, so
                 // CSRF protection defends against an attack this API isn't exposed to.
                 .csrf(AbstractHttpConfigurer::disable)
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.GET, "/api/v1/plans").permitAll()
@@ -61,6 +78,7 @@ public class SecurityConfig {
                         // match wins, and /api/v1/admin/** would otherwise fall through
                         // to the CUSTOMER-only default.
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .anyRequest().hasRole("CUSTOMER"))
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter()))
@@ -79,7 +97,26 @@ public class SecurityConfig {
     }
 
     /**
-     * This service's tokens (both {@code CUSTOMER} and {@code ADMIN}, carry
+     * The frontend is a separate origin (Vite dev server, or a deployed static host)
+     * with no session cookie to ride along on, so this is a plain cross-origin API
+     * call, not a CSRF-relevant one. All three lists are configurable per environment
+     * ({@code app.cors.allowed-origins}/{@code -methods}/{@code -headers}) rather than
+     * only origins, so adding a method or header this API doesn't use yet (e.g. once a
+     * PATCH/DELETE endpoint exists) is a config change, not a code change.
+     */
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOrigins(allowedOrigins);
+        configuration.setAllowedMethods(allowedMethods);
+        configuration.setAllowedHeaders(allowedHeaders);
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
+    }
+
+    /**
+     * This service's tokens (both {@code CUSTOMER} and {@code ADMIN}) carry
      * a single {@code role} claim rather than the OAuth2-standard {@code scope}/{@code
      * scp} claims the default converter expects — those model a third-party-issued
      * token's delegated scopes, a concept this self-issued-token design has no use for.

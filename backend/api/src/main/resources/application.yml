@@ -43,6 +43,15 @@ billing:
       api-key: ${STRIPE_API_KEY:sk_test_dev_only_override_with_STRIPE_API_KEY_env_var_in_every_real_environment}
       webhook-signing-secret: ${STRIPE_WEBHOOK_SECRET:whsec_dev_only_override_with_STRIPE_WEBHOOK_SECRET_env_var_in_every_real_environment}
 
+app:
+  cors:
+    # Comma-separated lists. Override allowed-origins for any deployed frontend origin;
+    # methods/headers default to what this API actually uses today, but are equally
+    # overridable so a future endpoint needing e.g. PATCH is a config change, not a code one.
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+    allowed-methods: ${CORS_ALLOWED_METHODS:GET,POST,OPTIONS}
+    allowed-headers: ${CORS_ALLOWED_HEADERS:Authorization,Content-Type,Idempotency-Key}
+
 management:
   endpoints:
     web:
