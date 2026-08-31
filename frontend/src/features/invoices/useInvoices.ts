@@ -1,25 +1,18 @@
-import { useInfiniteQuery } from '@tanstack/react-query';
 import { $api, fetchClient } from '../../api/client';
+import { useCursorPaginatedQuery } from '../../api/useCursorPaginatedQuery';
 import { useAuth } from '../../auth/useAuth';
 
-/**
- * Raw useInfiniteQuery with a hand-written queryFn rather than openapi-react-query's
- * wrapper: that wrapper injects initialPageParam straight into the query string as the
- * first request's cursor value, but this backend has no cursor value that means "first
- * page" — it rejects anything but a real one with INVALID_CURSOR. Writing the queryFn
- * directly means the cursor param is only included once a real one exists.
- */
 export function useInvoices() {
   const { session } = useAuth();
   const subscriptionId = session?.subscriptionId ?? '';
 
-  return useInfiniteQuery({
+  return useCursorPaginatedQuery({
     queryKey: ['invoices', subscriptionId],
-    queryFn: async ({ pageParam }: { pageParam: string | undefined }) => {
+    fetchPage: async (cursor) => {
       const { data, error } = await fetchClient.GET('/api/v1/subscriptions/{id}/invoices', {
         params: {
           path: { id: subscriptionId },
-          query: pageParam ? { cursor: pageParam, limit: '20' } : { limit: '20' },
+          query: cursor ? { cursor, limit: '20' } : { limit: '20' },
         },
       });
       if (error) {
@@ -27,8 +20,6 @@ export function useInvoices() {
       }
       return data;
     },
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: subscriptionId !== '',
   });
 }
