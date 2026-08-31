@@ -9,42 +9,37 @@ import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
-import java.util.UUID;
 
 /**
- * Mints a bearer token identifying a Customer, per ADR-0003's self-issued-JWT decision.
- * Used by the signup flow to hand a brand-new Customer their first token, and available
- * as a plain Spring bean for any later ticket/test that needs to act as an already-known
- * Customer (e.g. to exercise an ownership check) without re-deriving the signing setup.
- *
- * <p>The single {@code role} claim is deliberate, not a placeholder for a richer claims
- * model: every Customer-side authorization decision beyond that role is a
- * service-layer ownership check, not a token claim. A second role value ({@code
- * ADMIN}, see {@link AdminTokenIssuer}, now exists too, but carries no
- * ownership semantics at all — an Admin isn't scoped to "their own" data the way a
- * Customer is.
+ * Mints a bearer token identifying the Admin — the same self-issued-JWT
+ * machinery {@link CustomerTokenIssuer} uses, sharing this module's one {@link
+ * JwtEncoder}/{@link JwtProperties}, but with {@code role=ADMIN} and the admin
+ * username (not a Customer id) as the subject. {@link
+ * com.subscriptionbilling.api.security.SecurityConfig}'s JWT authorities converter
+ * reads the {@code role} claim generically, so no separate verification path is
+ * needed for this second role value.
  */
 @Component
-public class CustomerTokenIssuer {
+public class AdminTokenIssuer {
 
     private final JwtEncoder jwtEncoder;
     private final JwtProperties properties;
 
     @Autowired
-    public CustomerTokenIssuer(JwtEncoder jwtEncoder, JwtProperties properties) {
+    public AdminTokenIssuer(JwtEncoder jwtEncoder, JwtProperties properties) {
         this.jwtEncoder = jwtEncoder;
         this.properties = properties;
     }
 
-    public String issueFor(UUID customerId) {
+    public String issueFor(String adminUsername) {
         Instant now = Instant.now();
         JwsHeader jwsHeader = JwsHeader.with(MacAlgorithm.HS256).build();
         JwtClaimsSet claims = JwtClaimsSet.builder()
                 .issuer(properties.getIssuer())
                 .issuedAt(now)
                 .expiresAt(now.plus(properties.getTokenTtl()))
-                .subject(customerId.toString())
-                .claim("role", "CUSTOMER")
+                .subject(adminUsername)
+                .claim("role", "ADMIN")
                 .build();
         return jwtEncoder.encode(JwtEncoderParameters.from(jwsHeader, claims)).getTokenValue();
     }

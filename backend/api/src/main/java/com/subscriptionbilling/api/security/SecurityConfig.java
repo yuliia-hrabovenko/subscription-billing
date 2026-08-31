@@ -13,16 +13,21 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtGra
 import org.springframework.security.web.SecurityFilterChain;
 
 /**
- * ADR-0003: bearer-JWT authentication via Spring Security's OAuth2 Resource Server
- * support, one {@code CUSTOMER} role, no session state. {@code POST /subscriptions}
- * (signup), {@code GET /plans}, {@code POST /webhooks/gateway}, and the Prometheus
- * scrape endpoint are this API's only pre-auth endpoints — every other request must
- * carry a valid {@code CUSTOMER} token; anything beyond the role check (i.e. resource
- * ownership) is a service-layer concern, not this filter chain's. Prometheus
+ * Bearer-JWT authentication via Spring Security's
+ * OAuth2 Resource Server support, no session state. Two roles exist: {@code CUSTOMER}
+ * for self-service endpoints, and {@code ADMIN} for the read-only/plan-catalog
+ * back-office endpoints under {@code /api/v1/admin/**} — the two are mutually
+ * exclusive by path, never both accepted on the same endpoint. {@code POST
+ * /subscriptions} (signup), {@code GET /plans}, {@code POST /webhooks/gateway}, {@code
+ * POST /admin/login}, and the Prometheus scrape endpoint are this API's only pre-auth
+ * endpoints; every other request must carry a valid token for the role its path
+ * requires. Anything beyond the role check (i.e. resource ownership, {@code CUSTOMER}
+ * only — is a service-layer concern, not this filter chain's. Prometheus
  * (docker-compose) has no bearer token to present, so its scrape target can't sit
- * behind the same JWT requirement as customer endpoints; the gateway webhook endpoint
- * has no customer identity to present at all, and is authenticated instead by gateway
- * signature verification inside the controller/service layer, not this filter chain.
+ * behind the same JWT requirement as customer/admin endpoints; the gateway webhook
+ * endpoint has no customer identity to present at all, and is authenticated instead by
+ * gateway signature verification inside the controller/service layer, not this filter
+ * chain.
  */
 @Configuration
 @EnableWebSecurity
@@ -50,10 +55,15 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/v1/plans").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/subscriptions").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/webhooks/gateway").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/admin/login").permitAll()
                         .requestMatchers(HttpMethod.GET, "/actuator/prometheus").permitAll()
+                        // Must come before the generic anyRequest() rule below — first
+                        // match wins, and /api/v1/admin/** would otherwise fall through
+                        // to the CUSTOMER-only default.
+                        .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                         .anyRequest().hasRole("CUSTOMER"))
                 .oauth2ResourceServer(oauth2 -> oauth2
-                        .jwt(jwt -> jwt.jwtAuthenticationConverter(customerJwtAuthenticationConverter()))
+                        .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter()))
                         // The resource server filter handles a *presented* invalid/expired
                         // token itself, before authorizeHttpRequests' permitAll or the
                         // generic exceptionHandling() below ever run — without registering
@@ -69,12 +79,12 @@ public class SecurityConfig {
     }
 
     /**
-     * This service's tokens carry a single {@code role} claim (ADR-0003: one CUSTOMER
-     * role, no admin role in v1) rather than the OAuth2-standard {@code scope}/{@code
+     * This service's tokens (both {@code CUSTOMER} and {@code ADMIN}, carry
+     * a single {@code role} claim rather than the OAuth2-standard {@code scope}/{@code
      * scp} claims the default converter expects — those model a third-party-issued
      * token's delegated scopes, a concept this self-issued-token design has no use for.
      */
-    private JwtAuthenticationConverter customerJwtAuthenticationConverter() {
+    private JwtAuthenticationConverter jwtAuthenticationConverter() {
         JwtGrantedAuthoritiesConverter authoritiesConverter = new JwtGrantedAuthoritiesConverter();
         authoritiesConverter.setAuthorityPrefix("ROLE_");
         authoritiesConverter.setAuthoritiesClaimName("role");

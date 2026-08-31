@@ -27,4 +27,15 @@ public interface PriceVersionRepository extends JpaRepository<PriceVersion, UUID
      * 10), so it cannot reuse {@code PlanCatalogService}'s signup-eligibility path.
      */
     Optional<PriceVersion> findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(UUID planId, Instant asOf);
+
+    /**
+     * The single most-recently-effective-dated PriceVersion for one Plan, regardless of
+     * whether it has actually taken effect yet — unlike {@link
+     * #findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc}, this
+     * considers a future-scheduled PriceVersion too. Backs {@link
+     * PlanAdministrationService#addPriceVersion}'s monotonic-history check: a new price
+     * change must come after whatever's already scheduled, not just after what's
+     * currently in effect.
+     */
+    Optional<PriceVersion> findTopByPlanIdOrderByEffectiveFromDesc(UUID planId);
 }

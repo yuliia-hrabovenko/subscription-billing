@@ -54,4 +54,13 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
             + "and s.trialEndingSoonNotifiedAt is null")
     List<UUID> findTrialsEndingSoonIds(@Param("state") SubscriptionState state,
                                         @Param("leadTimeCutoff") Instant leadTimeCutoff);
+
+    /**
+     * Backs an Admin customer detail view: every Subscription a Customer has
+     * ever had, not just their current one — a Customer may have several over their
+     * lifetime, and an Admin's visibility isn't limited to the current one
+     * the way a Customer's own "at most one active" constraint is. Unbounded/no
+     * pagination: this list is naturally small per Customer.
+     */
+    List<Subscription> findByCustomerId(UUID customerId);
 }
