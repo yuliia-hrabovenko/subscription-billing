@@ -1,39 +1,30 @@
-import { AppBar, Box, Button, Container, Toolbar, Typography } from '@mui/material';
-import { Link as RouterLink, Outlet } from 'react-router-dom';
+import { Button } from '@mui/material';
 import { useAuth } from '../auth/useAuth';
+import { SidebarLayout, type SidebarNavItem } from './SidebarLayout';
 
 export function AppLayout() {
   const { isAuthenticated, signOut } = useAuth();
 
+  const navItems: SidebarNavItem[] = isAuthenticated
+    ? [
+        { label: 'Plans', to: '/' },
+        { label: 'Dashboard', to: '/dashboard' },
+        { label: 'Invoices', to: '/dashboard/invoices' },
+      ]
+    : [{ label: 'Plans', to: '/' }];
+
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <AppBar position="static">
-        <Toolbar sx={{ gap: 2 }}>
-          <Typography variant="h6" component={RouterLink} to="/" sx={{ color: 'inherit', textDecoration: 'none', flexGrow: 1 }}>
-            Subscription Billing
-          </Typography>
-          {isAuthenticated ? (
-            <>
-              <Button color="inherit" component={RouterLink} to="/dashboard">
-                Dashboard
-              </Button>
-              <Button color="inherit" component={RouterLink} to="/dashboard/invoices">
-                Invoices
-              </Button>
-              <Button color="inherit" onClick={signOut}>
-                Sign out
-              </Button>
-            </>
-          ) : (
-            <Button color="inherit" component={RouterLink} to="/">
-              Plans
-            </Button>
-          )}
-        </Toolbar>
-      </AppBar>
-      <Container component="main" maxWidth="md" sx={{ flexGrow: 1, py: 4 }}>
-        <Outlet />
-      </Container>
-    </Box>
+    <SidebarLayout
+      brand="Subscription Billing"
+      navItems={navItems}
+      contentMaxWidth={960}
+      footer={
+        isAuthenticated ? (
+          <Button variant="outlined" size="small" onClick={signOut} sx={{ color: 'inherit', borderColor: 'rgba(255,255,255,0.4)' }}>
+            Sign out
+          </Button>
+        ) : undefined
+      }
+    />
   );
 }
