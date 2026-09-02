@@ -34,10 +34,17 @@ billing:
       # every real environment (same convention as this file's DB_PASSWORD default).
       secret: ${JWT_SECRET:dev-only-jwt-signing-secret-override-with-JWT_SECRET-env-var-in-every-real-environment}
     admin-sso:
-      # Admin sign-in via Keycloak. Dev defaults point at docker-compose's
-      # keycloak service/realm; override both in every real environment.
-      issuer-uri: ${ADMIN_SSO_ISSUER_URI:http://localhost:8180/realms/subscription-billing}
+      # Admin sign-in via Auth0 (see docs/operations/auth0-admin-sso-setup.md). Unlike
+      # this file's other dev-only defaults, there's no working out-of-the-box value here
+      # -- Auth0 is SaaS-only, so every developer/environment must set all three to their
+      # own Auth0 tenant's issuer (with trailing slash, e.g. https://{yourTenant}.auth0.com/),
+      # the Auth0 role name granted admin access (admin-role), and the custom-claim
+      # namespace a Post-Login Action populates (claim-namespace).
+      issuer-uri: ${ADMIN_SSO_ISSUER_URI:https://changeme.auth0.com/}
       admin-role: ${ADMIN_SSO_ROLE:admin}
+      # Namespaced custom-claim prefix (see Auth0AdminJwtAuthenticationConverter). Empty
+      # default reads bare claim names, matching the test-only mock OIDC provider's shape.
+      claim-namespace: ${ADMIN_SSO_CLAIM_NAMESPACE:}
   payments:
     stripe:
       # Dev-only fallback baked into StripeProperties itself; override via this env var

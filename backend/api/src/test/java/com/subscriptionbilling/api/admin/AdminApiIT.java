@@ -29,18 +29,6 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * ADMIN role through the HTTP layer: a real Keycloak-issued token (ADR-0009) reaches
- * Admin endpoints, a Keycloak token without the {@code admin} realm role is rejected,
- * the two roles are mutually exclusive by path (an ADMIN token is rejected on a
- * CUSTOMER endpoint and vice versa, unauthenticated is rejected on {@code /admin/**}),
- * Admin visibility into Customers/Subscriptions/Invoices spans different Customers with
- * no ownership filtering (unlike {@code SubscriptionApiIT}/{@code InvoiceApiIT}'s
- * 403-for-a-different-owner tests), and Plan catalog management (create/retire/reprice)
- * enforces the invariants {@code PlanAdministrationServiceTest} covers at the unit
- * level, visible end-to-end here (e.g. a retired Plan disappears from the public
- * catalog).
- */
 @SpringBootTest
 @AutoConfigureMockMvc
 class AdminApiIT extends AbstractAdminIntegrationTest {
@@ -64,7 +52,7 @@ class AdminApiIT extends AbstractAdminIntegrationTest {
     private JsonMapper jsonMapper;
 
     @Test
-    void aRealKeycloakAdminTokenReachesAnAdminEndpoint() {
+    void aRealAdminTokenReachesAnAdminEndpoint() {
         String token = adminToken();
 
         mvc.get().uri("/api/v1/admin/plans")
@@ -74,7 +62,7 @@ class AdminApiIT extends AbstractAdminIntegrationTest {
     }
 
     @Test
-    void aKeycloakTokenWithoutTheAdminRoleIsRejectedWith403() {
+    void aTokenWithoutTheAdminGroupIsRejectedWith403() {
         mvc.get().uri("/api/v1/admin/plans")
                 .header("Authorization", "Bearer " + nonAdminToken())
                 .assertThat()

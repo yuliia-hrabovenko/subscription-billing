@@ -111,7 +111,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      * Submitted customer login credentials didn't match — 401, the same status a
      * missing/invalid bearer token gets, since both mean "this caller isn't who it
      * claims to be." Admin sign-in has no password of its own to reject this way
-     * anymore — a rejected Keycloak token is a resource-server concern,
+     * anymore — a rejected Auth0 token is a resource-server concern,
      * handled by {@code ApiAuthenticationEntryPoint}/{@code ApiAccessDeniedHandler}.
      */
     @ExceptionHandler(CustomerAuthenticationException.class)

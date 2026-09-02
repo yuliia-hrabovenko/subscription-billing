@@ -12,7 +12,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Mints a bearer token identifying a Customer, per ADR-0003's self-issued-JWT decision.
+ * Mints a bearer token identifying a Customer, self-issued-JWT decision.
  * Used by the signup flow to hand a brand-new Customer their first token, and available
  * as a plain Spring bean for any later ticket/test that needs to act as an already-known
  * Customer (e.g. to exercise an ownership check) without re-deriving the signing setup.
@@ -20,7 +20,7 @@ import java.util.UUID;
  * <p>The single {@code role} claim is deliberate, not a placeholder for a richer claims
  * model: every Customer-side authorization decision beyond that role is a
  * service-layer ownership check, not a token claim. A second role value ({@code ADMIN})
- * also exists, but is Keycloak-issued rather than self-issued and carries no
+ * also exists, but is Auth0-issued rather than self-issued and carries no
  * ownership semantics at all — an Admin isn't scoped to "their own" data the way a
  * Customer is.
  */

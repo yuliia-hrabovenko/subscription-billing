@@ -6,7 +6,7 @@ import { useAdminAuth } from '../../../auth/useAdminAuth';
 import { ErrorState } from '../../../components/ErrorState';
 
 /**
- * Lands here after Keycloak redirects back with an authorization code (ADR-0009).
+ * Lands here after Auth0 redirects back with an authorization code.
  * `signinRedirectCallback()` does the PKCE code-verifier check and the
  * code-for-token exchange, then this page hands the resulting access token to the
  * *existing* `useAdminAuth().signIn` — the same call `AdminLoginPage`'s old
