@@ -16,37 +16,6 @@ import org.springframework.context.annotation.FilterType;
 
 import java.util.Arrays;
 
-/**
- * The runnable Spring Boot application. Base package is {@code com.subscriptionbilling}
- * (not just {@code .api}) so component/entity/repository scanning picks up every other
- * module. The JPA half of that (widening entity/repository scanning past this class's
- * own package) lives in {@link PersistenceConfiguration}, not here directly — see its
- * Javadoc for why that has to be a separate, ordinarily-component-scanned class rather
- * than an annotation on this one.
- *
- * <p>Decomposed from the usual single {@code @SpringBootApplication} into its three
- * constituent annotations because that composed annotation no longer exposes {@code
- * excludeFilters} directly — this is Spring Boot's own documented way to customize a
- * piece {@code @SpringBootApplication} doesn't expose. The exclusion itself: every other
- * module's own {@code *TestApplication} root (billing-core's, audit's, notifications' —
- * the established naming convention for a library module's test-only {@code
- * @SpringBootApplication} root) lands on this module's test classpath too (reused for
- * shared fixtures like {@code AbstractPostgresIntegrationTest}), and scanning this
- * broadly would otherwise pick each one up as a second, competing {@code @Configuration}
- * root — redefining the same beans this class itself already defines and failing
- * context startup.
- *
- * <p>The other two {@code excludeFilters} entries ({@link TypeExcludeFilter}, {@link
- * AutoConfigurationExcludeFilter}) are what {@code @SpringBootApplication} normally
- * supplies by default and what test slices like {@code @WebMvcTest} rely on to exclude
- * non-web beans — decomposing the annotation loses them unless restated explicitly here.
- *
- * <p>This same class also serves as the billing job's entry point: passing {@code
- * --job=billing-run} on the command line (the Kubernetes CronJob's and the manual
- * operator trigger's shared invocation) runs {@link BillingJobRunner} once with no
- * embedded web server, then exits — a distinct startup path, not the web server
- * repurposed to also run the job.
- */
 @SpringBootConfiguration
 @EnableAutoConfiguration
 @ComponentScan(basePackages = "com.subscriptionbilling",
@@ -59,8 +28,20 @@ public class ApiApplication {
     private static final Logger log = LoggerFactory.getLogger(ApiApplication.class);
     private static final String BILLING_JOB_ARG = "--job=billing-run";
 
+    /**
+     * Only the one-shot billing job reports an exit code Kubernetes should act on, so
+     * only that path calls {@code System.exit}. {@code SpringApplication.run} for the
+     * web server returns as soon as the context is refreshed — it does not block — so
+     * the process staying up afterward depends entirely on Tomcat's non-daemon threads;
+     * forcing {@code System.exit} unconditionally here (as this used to do) tore that
+     * down and killed the web server moments after every startup.
+     */
     public static void main(String[] args) {
-        System.exit(run(args));
+        if (isBillingJobInvocation(args)) {
+            System.exit(run(args));
+        } else {
+            run(args);
+        }
     }
 
     /**
@@ -72,9 +53,9 @@ public class ApiApplication {
      * @param args              the raw command-line arguments
      * @param additionalSources extra Spring configuration classes to boot alongside
      *                          this one; empty in production
-     * @return the process exit code: {@code 0} for the web server (which blocks until
-     *         shutdown) or a completed job run, non-zero if the job run itself failed
-     *         to start or complete
+     * @return the process exit code: {@code 0} for the web server (whose caller must not
+     *         treat this as a signal to exit — see {@link #main}) or a completed job
+     *         run, non-zero if the job run itself failed to start or complete
      */
     static int run(String[] args, Class<?>... additionalSources) {
         if (isBillingJobInvocation(args)) {
