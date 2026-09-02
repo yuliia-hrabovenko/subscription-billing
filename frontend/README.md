@@ -30,3 +30,30 @@ If you are developing a production application, we recommend enabling type-aware
 ```
 
 See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+
+Structure:
+- api/ — typed API layer. generated/schema.d.ts is generated from openapi/api-docs.json via npm run generate:api (OpenAPI is the source of truth, per project rules). client.ts wires an openapi-fetch client with an authMiddleware that attaches bearer tokens and clears sessions on 401 — it picks between two separate token stores based on whether the request path is under /api/v1/admin.
+- auth/ — two fully separate auth stacks, customer (AuthContext/sessionStore, password login) and admin (AdminAuthContext/adminSessionStore, Auth0 SSO — see adminOidc.ts, docs/operations/auth0-admin-sso-setup.md), each backed by its own localStorage-based session store (plain class, not React state, so the API middleware can read it outside the component tree). No refresh endpoint exists (per ADR-0003) — token expiry just signs the user out.
+- routes/ — AppRoutes.tsx is the customer-facing route tree (plans, signup, dashboard, invoices) wrapped in AppLayout; admin/* delegates to AdminRoutes.tsx, a separate tree (login, sso-callback, overview, customers, subscriptions, plans, invoices) wrapped in AdminLayout and gated by RequireAdminAuth. RequireAuth/RequireAdminAuth are route guards per persona.
+- features/ — feature-sliced, one folder per capability: subscription (signup, dashboard), invoices, plans (customer-facing), and admin/{auth,customers,subscriptions,invoices,overview,plans} (admin console) — admin/auth holds the SSO login button and the sso-callback page, not a credentials form. Each feature pairs a page component with its own useX data hooks.
+- components/ — shared chrome/UI: AppLayout, AdminLayout (dark sidebar), plus StatCard, StatusChip, EmptyState, ErrorState, LoadingState.
+- schemas/ — Zod validation schemas for forms (signup, create plan, add price version), each with a colocated test.
+- theme.ts — MUI theme.
+
+## Admin SSO (dev)
+
+Admin sign-in redirects to Auth0, which is SaaS-only — there's no bundled local
+container. Full setup steps (Auth0 app, custom API, Post-Login Action, roles) and a
+troubleshooting table live in
+[`docs/operations/auth0-admin-sso-setup.md`](../docs/operations/auth0-admin-sso-setup.md).
+Once that's done, set here:
+
+- `VITE_ADMIN_SSO_ISSUER_URI` — your Auth0 tenant, e.g. `https://{yourTenant}.auth0.com`
+- `VITE_ADMIN_SSO_CLIENT_ID` — the registered application's client id
+- `VITE_ADMIN_SSO_AUDIENCE` — your custom API's identifier (required — without it Auth0
+  returns an opaque token, not a JWT)
+- `VITE_ADMIN_SSO_CLAIM_NAMESPACE` — the namespace your Post-Login Action uses for the
+  `groups`/`preferred_username` claims (usually the same value as the audience)
+
+All four are required; `adminOidc.ts`'s fallback values are placeholders, not a working
+default.
