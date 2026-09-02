@@ -47,18 +47,6 @@ services:
     ports:
       - "6379:6379"
 
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.0
-    container_name: subscription-billing-keycloak
-    command: start-dev --import-realm
-    environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
-    ports:
-      - "8180:8080"
-    volumes:
-      - ./docker/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
-
   prometheus:
     image: prom/prometheus:v2.55.1
     container_name: subscription-billing-prometheus

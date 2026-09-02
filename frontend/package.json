@@ -15,6 +15,7 @@
     "generate:api": "openapi-typescript ./openapi/api-docs.json -o ./src/api/generated/schema.d.ts"
   },
   "dependencies": {
+    "@auth0/auth0-react": "^2.24.1",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@hookform/resolvers": "^5.9.1",

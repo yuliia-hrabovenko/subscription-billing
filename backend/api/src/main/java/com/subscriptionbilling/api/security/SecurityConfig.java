@@ -32,34 +32,20 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Bearer-JWT authentication via Spring Security's OAuth2 Resource Server
- * support, no session state. Two roles exist: {@code CUSTOMER} for self-service
- * endpoints, and {@code ADMIN} for the read-only/plan-catalog back-office endpoints
- * under {@code /api/v1/admin/**} — the two are mutually exclusive by path, never both
- * accepted on the same endpoint. {@code POST /subscriptions} (signup), {@code POST
- * /customers/login}, {@code GET /plans}, {@code POST /webhooks/gateway}, and the
- * Prometheus scrape endpoint are this API's only pre-auth endpoints; every other
- * request must carry a valid token for the role its path requires. Prometheus
- * (docker-compose) has no bearer token to present, so its scrape target can't sit
- * behind the same JWT requirement as customer/admin endpoints; the gateway webhook
- * endpoint has no customer identity to present at all, and is authenticated instead by
- * gateway signature verification inside the controller/service layer, not this filter
- * chain.
+ * Configures stateless Bearer-JWT authentication with separate CUSTOMER and ADMIN
+ * roles. CUSTOMER uses self-issued tokens validated with the service's symmetric key;
+ * ADMIN uses Auth0-issued tokens (Authorization Code + PKCE) validated via Auth0 JWKS.
  *
- * <p>ADR-0009: CUSTOMER and ADMIN tokens now come from two different issuers — CUSTOMER
- * stays a self-issued token (ADR-0003) validated by this service's own symmetric key;
- * ADMIN is a Keycloak-issued token (Authorization Code + PKCE, obtained by the SPA
- * directly from Keycloak — this backend never sees a client secret or mints an Admin
- * token itself), validated against Keycloak's published JWKS. There is no {@code POST
- * /admin/login} anymore; an Admin's only way to a token is through Keycloak.
- * {@link #adminAuthenticationManagerResolver} routes an incoming token to the right
- * decoder/converter pair by its {@code iss} claim. Both decoders are wrapped in {@link
- * SupplierJwtDecoder} so neither the Customer {@link JwtDecoder} bean lookup nor the
- * blocking network call to fetch Keycloak's JWKS/OIDC discovery document happens at
- * {@code securityFilterChain()} bean-creation time — only lazily, the first time a
- * request actually needs that issuer's decoder. Without this, every application
- * context (including web-layer slice tests that only exercise a public endpoint, and a
- * plain app boot before Keycloak happens to be reachable) would pay that cost eagerly.
+ * <p>{@link #adminAuthenticationManagerResolver} selects the appropriate decoder and
+ * converter from the token's {@code iss} claim. Both decoders use {@link
+ * SupplierJwtDecoder} to defer decoder creation and Auth0 discovery/JWKS network calls
+ * until an authenticated request requires them.
+ *
+ * <p>Public endpoints are signup/login, plan listing, gateway webhooks (authenticated
+ * by gateway signature), and Prometheus scraping. All other endpoints require the role
+ * associated with their path; CUSTOMER and ADMIN are mutually exclusive.
+ *
+ * <p>There is no Admin login endpoint: the SPA obtains Admin tokens directly from Auth0.
  */
 @Configuration
 @EnableWebSecurity
@@ -71,6 +57,7 @@ public class SecurityConfig {
     private final String customerIssuer;
     private final String adminIssuerUri;
     private final String adminRole;
+    private final String adminClaimNamespace;
     private final List<String> allowedOrigins;
     private final List<String> allowedMethods;
     private final List<String> allowedHeaders;
@@ -81,8 +68,9 @@ public class SecurityConfig {
                            ObjectProvider<JwtDecoder> customerJwtDecoderProvider,
                            @Value("${billing.security.jwt.issuer:subscription-billing}") String customerIssuer,
                            @Value("${billing.security.admin-sso.issuer-uri:"
-                                   + "http://localhost:8180/realms/subscription-billing}") String adminIssuerUri,
+                                   + "https://changeme.auth0.com/}") String adminIssuerUri,
                            @Value("${billing.security.admin-sso.admin-role:admin}") String adminRole,
+                           @Value("${billing.security.admin-sso.claim-namespace:}") String adminClaimNamespace,
                            @Value("${app.cors.allowed-origins:http://localhost:5173}") List<String> allowedOrigins,
                            @Value("${app.cors.allowed-methods:GET,POST,OPTIONS}") List<String> allowedMethods,
                            @Value("${app.cors.allowed-headers:Authorization,Content-Type,Idempotency-Key}")
@@ -93,6 +81,7 @@ public class SecurityConfig {
         this.customerIssuer = customerIssuer;
         this.adminIssuerUri = adminIssuerUri;
         this.adminRole = adminRole;
+        this.adminClaimNamespace = adminClaimNamespace;
         this.allowedOrigins = allowedOrigins;
         this.allowedMethods = allowedMethods;
         this.allowedHeaders = allowedHeaders;
@@ -121,12 +110,6 @@ public class SecurityConfig {
                         .anyRequest().hasRole("CUSTOMER"))
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .authenticationManagerResolver(adminAuthenticationManagerResolver())
-                        // The resource server filter handles a *presented* invalid/expired
-                        // token itself, before authorizeHttpRequests' permitAll or the
-                        // generic exceptionHandling() below ever run — without registering
-                        // the same entry point/handler here too, that path falls back to
-                        // Spring Security's own bare, bodyless default and breaks this
-                        // module's "every rejection gets the structured envelope" contract.
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler))
                 .exceptionHandling(exceptions -> exceptions
@@ -138,11 +121,11 @@ public class SecurityConfig {
     /**
      * Two issuers, two decoder/converter pairs, routed by the incoming token's (not yet
      * trusted — only used to pick a decoder, which then verifies the signature) {@code
-     * iss} claim: this service's own issuer for self-issued CUSTOMER tokens (unchanged
-     * from ADR-0003), and Keycloak's realm issuer for ADMIN tokens (ADR-0009).
-     * {@code JwtIssuerAuthenticationManagerResolver} only takes an {@link
-     * AuthenticationManagerResolver} (no {@code Map} constructor), so the lookup map's
-     * {@code get} method reference stands in as one.
+     * iss} claim: this service's own issuer for self-issued CUSTOMER tokens
+     * and Auth0's authorization-server issuer for ADMIN tokens
+     * {@code JwtIssuerAuthenticationManagerResolver} only takes an
+     * {@link AuthenticationManagerResolver} (no {@code Map} constructor), so the lookup
+     * map's {@code get} method reference stands in as one.
      */
     private JwtIssuerAuthenticationManagerResolver adminAuthenticationManagerResolver() {
         JwtDecoder lazyCustomerDecoder = new SupplierJwtDecoder(customerJwtDecoderProvider::getObject);
@@ -151,7 +134,8 @@ public class SecurityConfig {
 
         JwtDecoder lazyAdminDecoder = new SupplierJwtDecoder(() -> JwtDecoders.fromIssuerLocation(adminIssuerUri));
         AuthenticationManager adminManager = new ProviderManager(
-                jwtAuthenticationProvider(lazyAdminDecoder, new KeycloakAdminJwtAuthenticationConverter(adminRole)));
+                jwtAuthenticationProvider(lazyAdminDecoder,
+                        new Auth0AdminJwtAuthenticationConverter(adminRole, adminClaimNamespace)));
 
         AuthenticationManagerResolver<String> byIssuer = Map.of(
                 customerIssuer, customerManager,
@@ -189,9 +173,9 @@ public class SecurityConfig {
      * This service's self-issued CUSTOMER tokens carry a single {@code role} claim
      * rather than the OAuth2-standard {@code scope}/{@code scp} claims the default
      * converter expects — those model a third-party-issued token's delegated scopes, a
-     * concept this self-issued-token design has no use for. Keycloak-issued ADMIN
-     * tokens use a separate converter ({@link KeycloakAdminJwtAuthenticationConverter})
-     * that reads Keycloak's own realm-role claim shape instead.
+     * concept this self-issued-token design has no use for. Auth0-issued ADMIN
+     * tokens use a separate converter ({@link Auth0AdminJwtAuthenticationConverter})
+     * that reads Auth0's own group-membership claim shape instead.
      */
     private JwtAuthenticationConverter customerJwtAuthenticationConverter() {
         JwtGrantedAuthoritiesConverter authoritiesConverter = new JwtGrantedAuthoritiesConverter();

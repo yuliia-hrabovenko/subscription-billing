@@ -1,9 +1,8 @@
 import { expect, test } from '@playwright/test';
 
 const API_BASE_URL = process.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
-// The dev admin user seeded by docker/keycloak/realm-export.json (ADR-0009).
-const ADMIN_SSO_USERNAME = 'admin@example.com';
-const ADMIN_SSO_PASSWORD = 'admin-dev-password';
+const ADMIN_SSO_USERNAME = process.env.E2E_ADMIN_SSO_USERNAME;
+const ADMIN_SSO_PASSWORD = process.env.E2E_ADMIN_SSO_PASSWORD;
 
 let seededCustomerEmail = '';
 
@@ -12,7 +11,7 @@ test.beforeAll(async ({ request }) => {
   if (!plansResponse?.ok()) {
     throw new Error(
       `Backend not reachable at ${API_BASE_URL} -- start it first: mvn -pl api spring-boot:run ` +
-        "(with docker-compose's postgres and keycloak up -- the admin-login test needs a real Keycloak redirect).",
+        '(with ADMIN_SSO_ISSUER_URI/ADMIN_SSO_ROLE pointed at your Auth0 tenant -- see README.md).',
     );
   }
 
@@ -28,15 +27,23 @@ test.beforeAll(async ({ request }) => {
   }
 });
 
-test('admin logs in via Keycloak SSO, manages a plan, and drills into a customer', async ({ page }) => {
+test('admin logs in via Auth0 SSO, manages a plan, and drills into a customer', async ({ page }) => {
+  test.skip(
+    !ADMIN_SSO_USERNAME || !ADMIN_SSO_PASSWORD,
+    'Requires E2E_ADMIN_SSO_USERNAME/E2E_ADMIN_SSO_PASSWORD for a real Auth0 dev Admin user (docs/operations/auth0-admin-sso-setup.md).',
+  );
+
   await page.goto('/admin/login');
   await page.getByRole('button', { name: 'Sign in with SSO' }).click();
 
-  // Redirected to Keycloak's own hosted login page (default theme field ids).
-  await page.waitForURL(/\/realms\/.+\/protocol\/openid-connect\/auth/);
-  await page.locator('#username').fill(ADMIN_SSO_USERNAME);
-  await page.locator('#password').fill(ADMIN_SSO_PASSWORD);
-  await page.locator('#kc-login').click();
+  // Redirected to Auth0's own hosted New Universal Login (/u/login). Role/label locators,
+  // not raw element ids, since this assumes only the default page (not a custom-branded
+  // one) -- field labels/button text here are Auth0's stock New Universal Login and may
+  // need adjusting if the tenant customizes the login page.
+  await page.waitForURL(/\/u\/login/);
+  await page.getByLabel('Email address').fill(ADMIN_SSO_USERNAME as string);
+  await page.getByLabel('Password').fill(ADMIN_SSO_PASSWORD as string);
+  await page.getByRole('button', { name: 'Continue' }).click();
 
   // Redirected back through /admin/sso-callback and on to the overview page.
   await page.waitForURL('**/admin');

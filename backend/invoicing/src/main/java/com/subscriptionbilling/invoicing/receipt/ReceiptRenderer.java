@@ -3,68 +3,380 @@ package com.subscriptionbilling.invoicing.receipt;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
-import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.time.Instant;
 import java.util.UUID;
 
-/**
- * Renders a receipt's fixed set of facts as a single-page PDF: Plan name, charged
- * amount, charge date, and Invoice id -- self-sufficient evidence of a successful
- * charge, with no further lookup needed to make sense of it.
- */
 @Component
 public class ReceiptRenderer {
 
-    private static final DateTimeFormatter CHARGE_DATE_FORMAT = DateTimeFormatter.ISO_LOCAL_DATE;
-    private static final float LEFT_MARGIN = 60f;
-    private static final float LINE_HEIGHT = 24f;
-    private static final float START_Y = 720f;
-    private static final float FONT_SIZE = 12f;
+    private static final float PAGE_WIDTH = 612f;
+    private static final float PAGE_HEIGHT = 792f;
+
+    private static final float MARGIN = 60f;
+    private static final float CONTENT_WIDTH = PAGE_WIDTH - 2 * MARGIN;
+
+    private static final float HEADER_Y = PAGE_HEIGHT - 60f;
+    private static final float FOOTER_Y = 35f;
+
+    private static final float TITLE_FONT_SIZE = 24f;
+    private static final float BODY_FONT_SIZE = 11f;
+    private static final float SECTION_FONT_SIZE = 10f;
+    private static final float FOOTER_FONT_SIZE = 8f;
+    private static final float TOTAL_FONT_SIZE = 20f;
+
+    private static final float STATUS_BOX_HEIGHT = 32f;
+    private static final float ROW_SPACING = 25f;
+
+    private static final DateTimeFormatter DATE_FORMAT =
+            DateTimeFormatter.ofPattern("MMM dd, yyyy");
+
+    private static final PDType1Font REGULAR =
+            new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+
+    private static final PDType1Font BOLD =
+            new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD);
 
     /**
-     * @param invoiceId the Invoice identifier to print
-     * @param planName  the charged Plan's name
-     * @param amount    the amount actually charged, from the Invoice's snapshotted
-     *                  PriceVersion -- never the Plan's current price
-     * @param chargedAt the instant the successful Payment Attempt resolved
-     * @return the rendered PDF's bytes
+     * Renders a single-page receipt containing the facts necessary
+     * to understand a successful charge without further lookup.
+     *
+     * @param invoiceId  invoice identifier
+     * @param planName   charged plan name
+     * @param amount     amount actually charged
+     * @param chargedAt  instant when the successful payment was completed
      */
-    public byte[] render(UUID invoiceId, String planName, BigDecimal amount, Instant chargedAt) {
-        LocalDate chargeDate = chargedAt.atZone(ZoneOffset.UTC).toLocalDate();
-        try (PDDocument document = new PDDocument()) {
-            PDPage page = new PDPage();
-            document.addPage(page);
-            PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
-            try (PDPageContentStream contentStream = new PDPageContentStream(document, page)) {
-                writeLine(contentStream, font, "Receipt", START_Y);
-                writeLine(contentStream, font, "Invoice: " + invoiceId, START_Y - LINE_HEIGHT);
-                writeLine(contentStream, font, "Plan: " + planName, START_Y - 2 * LINE_HEIGHT);
-                writeLine(contentStream, font, "Amount charged: $" + amount.toPlainString(), START_Y - 3 * LINE_HEIGHT);
-                writeLine(contentStream, font, "Charge date: " + CHARGE_DATE_FORMAT.format(chargeDate), START_Y - 4 * LINE_HEIGHT);
+    public byte[] render(
+            UUID invoiceId,
+            String planName,
+            BigDecimal amount,
+            Instant chargedAt
+    ) {
+        LocalDate chargeDate = chargedAt
+                .atZone(ZoneOffset.UTC)
+                .toLocalDate();
+
+        try (PDDocument document = new PDDocument();
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+
+            PDPage page = createPage(document);
+
+            try (PDPageContentStream content = createContentStream(document, page)) {
+                renderHeader(content);
+                renderPaymentDetails(
+                        content,
+                        invoiceId,
+                        planName,
+                        chargeDate
+                );
+                renderTotal(content, amount);
+                renderFooter(content);
             }
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            document.save(out);
-            return out.toByteArray();
+
+            document.save(output);
+            return output.toByteArray();
+
         } catch (IOException e) {
-            throw new UncheckedIOException("Failed to render receipt PDF for invoice " + invoiceId, e);
+            throw new UncheckedIOException(
+                    "Failed to render receipt PDF for invoice " + invoiceId,
+                    e
+            );
         }
     }
 
-    private void writeLine(PDPageContentStream contentStream, PDType1Font font, String text, float y) throws IOException {
-        contentStream.beginText();
-        contentStream.setFont(font, FONT_SIZE);
-        contentStream.newLineAtOffset(LEFT_MARGIN, y);
-        contentStream.showText(text);
-        contentStream.endText();
+    private PDPage createPage(PDDocument document) {
+        PDPage page = new PDPage();
+        document.addPage(page);
+        return page;
+    }
+
+    private PDPageContentStream createContentStream(
+            PDDocument document,
+            PDPage page
+    ) throws IOException {
+        return new PDPageContentStream(document, page);
+    }
+
+    private void renderHeader(
+            PDPageContentStream content
+    ) throws IOException {
+
+        float y = HEADER_Y;
+
+        y = writeCenteredText(
+                content,
+                BOLD,
+                TITLE_FONT_SIZE,
+                "PAYMENT RECEIPT",
+                y
+        );
+
+        y -= 22f;
+
+        writeCenteredText(
+                content,
+                REGULAR,
+                BODY_FONT_SIZE,
+                "Thank you for your payment.",
+                y
+        );
+
+        y -= 45f;
+
+        drawStatusBox(content, y);
+
+        writeText(
+                content,
+                BOLD,
+                BODY_FONT_SIZE,
+                "PAID",
+                MARGIN + 12f,
+                y + 10f
+        );
+    }
+
+    private void renderPaymentDetails(
+            PDPageContentStream content,
+            UUID invoiceId,
+            String planName,
+            LocalDate chargeDate
+    ) throws IOException {
+
+        float y = 555f;
+
+        y = writeSectionTitle(
+                content,
+                "PAYMENT DETAILS",
+                y
+        );
+
+        y -= 18f;
+
+        y = writeLabelValue(
+                content,
+                "Invoice",
+                invoiceId.toString(),
+                y
+        );
+
+        y = writeLabelValue(
+                content,
+                "Charge date",
+                DATE_FORMAT.format(chargeDate),
+                y
+        );
+
+        writeLabelValue(
+                content,
+                "Plan",
+                planName,
+                y
+        );
+    }
+
+    private void renderTotal(
+            PDPageContentStream content,
+            BigDecimal amount
+    ) throws IOException {
+
+        float y = 425f;
+
+        drawDivider(content, y);
+
+        y -= 32f;
+
+        writeText(
+                content,
+                REGULAR,
+                SECTION_FONT_SIZE,
+                "TOTAL CHARGED",
+                MARGIN,
+                y
+        );
+
+        y -= 28f;
+
+        writeText(
+                content,
+                BOLD,
+                TOTAL_FONT_SIZE,
+                formatAmount(amount),
+                MARGIN,
+                y
+        );
+
+        drawDivider(content, y - 25f);
+    }
+
+    private void renderFooter(
+            PDPageContentStream content
+    ) throws IOException {
+
+        writeText(
+                content,
+                REGULAR,
+                FOOTER_FONT_SIZE,
+                "This receipt confirms a successful payment.",
+                MARGIN,
+                105f
+        );
+
+        writeText(
+                content,
+                REGULAR,
+                FOOTER_FONT_SIZE,
+                "Please retain this receipt for your records.",
+                MARGIN,
+                91f
+        );
+
+        writeCenteredText(
+                content,
+                REGULAR,
+                FOOTER_FONT_SIZE,
+                "Receipt generated automatically",
+                FOOTER_Y
+        );
+    }
+
+    private float writeSectionTitle(
+            PDPageContentStream content,
+            String title,
+            float y
+    ) throws IOException {
+
+        writeText(
+                content,
+                BOLD,
+                SECTION_FONT_SIZE,
+                title,
+                MARGIN,
+                y
+        );
+
+        drawDivider(content, y - 8f);
+
+        return y - 8f;
+    }
+
+    private float writeLabelValue(
+            PDPageContentStream content,
+            String label,
+            String value,
+            float y
+    ) throws IOException {
+
+        writeText(
+                content,
+                REGULAR,
+                BODY_FONT_SIZE,
+                label,
+                MARGIN,
+                y
+        );
+
+        float valueWidth = textWidth(
+                BOLD,
+                BODY_FONT_SIZE,
+                value
+        );
+
+        writeText(
+                content,
+                BOLD,
+                BODY_FONT_SIZE,
+                value,
+                PAGE_WIDTH - MARGIN - valueWidth,
+                y
+        );
+
+        return y - ROW_SPACING;
+    }
+
+    private float writeCenteredText(
+            PDPageContentStream content,
+            PDType1Font font,
+            float fontSize,
+            String text,
+            float centerY
+    ) throws IOException {
+
+        float textWidth = textWidth(font, fontSize, text);
+        float x = (PAGE_WIDTH - textWidth) / 2f;
+
+        writeText(
+                content,
+                font,
+                fontSize,
+                text,
+                x,
+                centerY
+        );
+
+        return centerY;
+    }
+
+    private void writeText(
+            PDPageContentStream content,
+            PDType1Font font,
+            float fontSize,
+            String text,
+            float x,
+            float y
+    ) throws IOException {
+
+        content.beginText();
+        content.setFont(font, fontSize);
+        content.newLineAtOffset(x, y);
+        content.showText(text);
+        content.endText();
+    }
+
+    private float textWidth(
+            PDType1Font font,
+            float fontSize,
+            String text
+    ) throws IOException {
+
+        return font.getStringWidth(text) / 1000f * fontSize;
+    }
+
+    private void drawDivider(
+            PDPageContentStream content,
+            float y
+    ) throws IOException {
+
+        content.moveTo(MARGIN, y);
+        content.lineTo(PAGE_WIDTH - MARGIN, y);
+        content.stroke();
+    }
+
+    private void drawStatusBox(
+            PDPageContentStream content,
+            float y
+    ) throws IOException {
+
+        content.addRect(
+                MARGIN,
+                y,
+                CONTENT_WIDTH,
+                STATUS_BOX_HEIGHT
+        );
+
+        content.stroke();
+    }
+
+    private String formatAmount(BigDecimal amount) {
+        return "$" + amount.toPlainString();
     }
 }

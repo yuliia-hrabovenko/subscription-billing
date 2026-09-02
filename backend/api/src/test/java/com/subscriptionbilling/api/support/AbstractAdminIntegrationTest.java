@@ -4,7 +4,6 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.client.RestClient;
-import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -15,32 +14,22 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 /**
- * Extends {@link AbstractPostgresIntegrationTest} with a real Keycloak realm
- * (ADR-0009), for {@code AdminApiIT} only — no other IT class touches {@code
- * /api/v1/admin/**}, so no reason to pay Keycloak's startup cost anywhere else. Same
- * "start once in a static initializer, never torn down until the JVM exits" singleton
- * pattern {@code AbstractPostgresIntegrationTest}/{@code AbstractKafkaIntegrationTest}
- * (notifications module) already use.
+ * Extends {@link AbstractPostgresIntegrationTest} with a mock OIDC provider for
+ * {@code AdminApiIT}. The provider is started once and kept alive for the JVM,
+ * matching the singleton pattern used by the PostgreSQL and Kafka integration tests.
  *
- * <p>Keycloak's {@code start-dev} mode derives the {@code iss} claim it stamps on
- * issued tokens from the Host/port the request actually arrived on, rather than a
- * fixed configured hostname — so as long as every caller (this class's token fetch,
- * and {@code SecurityConfig}'s JWKS/discovery fetch via {@code
- * billing.security.admin-sso.issuer-uri}) addresses the container through the exact
- * same {@link #issuerUri()}, the dynamically-mapped Testcontainers port just works with
- * no fixed-port or hostname configuration needed.
+ * <p>The mock server derives {@code iss} from {@link #ISSUER_ID}. Both token requests
+ * and Spring Security discovery/JWKS requests must therefore use the same
+ * {@link #issuerUri()}, allowing Testcontainers' dynamic port without fixed-port
+ * configuration.
  *
- * <p>The imported realm ({@code keycloak/test-realm-export.json}) seeds a public {@code
- * test-client} with the direct-access-grants (Resource Owner Password Credentials)
- * flow enabled — simplest way for a JVM test (no browser) to obtain a real,
- * Keycloak-signed token — plus one user with the {@code admin} realm role and one
- * without, so tests can cover both the happy path and "authenticated but not an Admin".
- * The real SPA never uses this grant type; it uses Authorization Code + PKCE.
+ * <p>{@code JSON_CONFIG} maps the token request's {@code username} to fixture claims,
+ * providing admin and non-admin users for authorization tests.
  */
 @Testcontainers(disabledWithoutDocker = true)
 public abstract class AbstractAdminIntegrationTest extends AbstractPostgresIntegrationTest {
 
-    private static final String REALM = "subscription-billing-test";
+    private static final String ISSUER_ID = "subscription-billing-test";
     private static final String TEST_CLIENT_ID = "test-client";
 
     public static final String ADMIN_USERNAME = "admin-tester";
@@ -48,22 +37,51 @@ public abstract class AbstractAdminIntegrationTest extends AbstractPostgresInteg
     public static final String NON_ADMIN_USERNAME = "viewer-tester";
     public static final String NON_ADMIN_PASSWORD = "viewer-test-password!";
 
-    protected static final GenericContainer<?> KEYCLOAK =
-            new GenericContainer<>(DockerImageName.parse("quay.io/keycloak/keycloak:26.0"))
-                    .withCommand("start-dev", "--import-realm")
-                    .withEnv("KEYCLOAK_ADMIN", "admin")
-                    .withEnv("KEYCLOAK_ADMIN_PASSWORD", "admin")
-                    .withClasspathResourceMapping("keycloak/test-realm-export.json",
-                            "/opt/keycloak/data/import/test-realm-export.json", BindMode.READ_ONLY)
+    private static final String JSON_CONFIG = """
+            {
+              "interactiveLogin": false,
+              "tokenCallbacks": [
+                {
+                  "issuerId": "%s",
+                  "tokenExpiry": 120,
+                  "requestMappings": [
+                    {
+                      "requestParam": "username",
+                      "match": "%s",
+                      "claims": {
+                        "sub": "admin-tester-id",
+                        "preferred_username": "%s",
+                        "groups": ["admin"]
+                      }
+                    },
+                    {
+                      "requestParam": "username",
+                      "match": "%s",
+                      "claims": {
+                        "sub": "viewer-tester-id",
+                        "preferred_username": "%s",
+                        "groups": ["viewer"]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+            """.formatted(ISSUER_ID, ADMIN_USERNAME, ADMIN_USERNAME, NON_ADMIN_USERNAME, NON_ADMIN_USERNAME);
+
+    protected static final GenericContainer<?> MOCK_OAUTH2_SERVER =
+            new GenericContainer<>(DockerImageName.parse("ghcr.io/navikt/mock-oauth2-server:6.0.2"))
+                    .withEnv("JSON_CONFIG", JSON_CONFIG)
                     .withExposedPorts(8080)
-                    .waitingFor(Wait.forHttp("/realms/" + REALM).forPort(8080).forStatusCode(200));
+                    .waitingFor(Wait.forHttp("/" + ISSUER_ID + "/.well-known/openid-configuration")
+                            .forPort(8080).forStatusCode(200));
 
     static {
-        KEYCLOAK.start();
+        MOCK_OAUTH2_SERVER.start();
     }
 
     protected static String issuerUri() {
-        return "http://" + KEYCLOAK.getHost() + ":" + KEYCLOAK.getMappedPort(8080) + "/realms/" + REALM;
+        return "http://" + MOCK_OAUTH2_SERVER.getHost() + ":" + MOCK_OAUTH2_SERVER.getMappedPort(8080) + "/" + ISSUER_ID;
     }
 
     @DynamicPropertySource
@@ -71,12 +89,16 @@ public abstract class AbstractAdminIntegrationTest extends AbstractPostgresInteg
         registry.add("billing.security.admin-sso.issuer-uri", AbstractAdminIntegrationTest::issuerUri);
     }
 
-    /** A real Keycloak-signed access token for the seeded Admin user. */
+    /**
+     * A real, mock-server-signed access token in the bare-claim shape (no namespacing —
+     * see {@code claim-namespace} in application.yml / docs/operations/auth0-admin-sso-setup.md),
+     * for the seeded Admin user.
+     */
     protected static String adminToken() {
         return tokenFor(ADMIN_USERNAME, ADMIN_PASSWORD);
     }
 
-    /** A real Keycloak-signed access token for a seeded user with no {@code admin} role. */
+    /** Same bare-claim shape as {@link #adminToken()}, for a user with no {@code admin} group. */
     protected static String nonAdminToken() {
         return tokenFor(NON_ADMIN_USERNAME, NON_ADMIN_PASSWORD);
     }
@@ -86,7 +108,7 @@ public abstract class AbstractAdminIntegrationTest extends AbstractPostgresInteg
         String form = "grant_type=password&client_id=" + TEST_CLIENT_ID
                 + "&username=" + encode(username) + "&password=" + encode(password);
         Map<String, Object> response = RestClient.create().post()
-                .uri(issuerUri() + "/protocol/openid-connect/token")
+                .uri(issuerUri() + "/token")
                 .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                 .body(form)
                 .retrieve()

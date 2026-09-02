@@ -23,9 +23,9 @@ import java.util.UUID;
  * Plans) plus create/retire/reprice. {@code principal.getName()} is the acting admin's
  * identity, threaded into {@link PlanAdministrationService} purely for its structured
  * logs — there's no admin-scoped audit table this writes to. Deliberately {@code
- * Principal}, not the raw {@code Jwt} (whose {@code sub} claim is a Keycloak-opaque
- * UUID, ADR-0009) — {@code Authentication.getName()} is what {@code
- * KeycloakAdminJwtAuthenticationConverter} set to the token's human-readable {@code
+ * Principal}, not the raw {@code Jwt} (whose {@code sub} claim is an Auth0-opaque
+ * id) — {@code Authentication.getName()} is what {@code
+ * Auth0AdminJwtAuthenticationConverter} set to the token's human-readable {@code
  * preferred_username}.
  */
 @RestController
