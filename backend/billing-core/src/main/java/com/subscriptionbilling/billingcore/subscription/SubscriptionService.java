@@ -21,6 +21,7 @@ import com.subscriptionbilling.billingjob.invoicing.InvoiceCancellationPort;
 import com.subscriptionbilling.notifications.outbox.OutboxEvent;
 import com.subscriptionbilling.notifications.outbox.OutboxEventRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -74,6 +75,7 @@ public class SubscriptionService {
     private final DunningRetryCharge dunningRetryCharge;
     private final InvoiceCancellationPort invoiceCancellationPort;
     private final OutboxEventRepository outboxEventRepository;
+    private final PasswordEncoder passwordEncoder;
     private final Clock clock;
 
     @Autowired
@@ -82,10 +84,10 @@ public class SubscriptionService {
                                 AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
                                 IdempotencyService idempotencyService, ChargeableSubscriptionPort chargeableSubscriptionPort,
                                 DunningRetryCharge dunningRetryCharge, InvoiceCancellationPort invoiceCancellationPort,
-                                OutboxEventRepository outboxEventRepository) {
+                                OutboxEventRepository outboxEventRepository, PasswordEncoder passwordEncoder) {
         this(customerRepository, planRepository, subscriptionRepository, planCatalogService, auditLogEntryRepository,
                 tokenIssuer, idempotencyService, chargeableSubscriptionPort, dunningRetryCharge, invoiceCancellationPort,
-                outboxEventRepository, Clock.systemUTC());
+                outboxEventRepository, passwordEncoder, Clock.systemUTC());
     }
 
     SubscriptionService(CustomerRepository customerRepository, PlanRepository planRepository,
@@ -93,7 +95,7 @@ public class SubscriptionService {
                          AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
                          IdempotencyService idempotencyService, ChargeableSubscriptionPort chargeableSubscriptionPort,
                          DunningRetryCharge dunningRetryCharge, InvoiceCancellationPort invoiceCancellationPort,
-                         OutboxEventRepository outboxEventRepository, Clock clock) {
+                         OutboxEventRepository outboxEventRepository, PasswordEncoder passwordEncoder, Clock clock) {
         this.customerRepository = customerRepository;
         this.planRepository = planRepository;
         this.subscriptionRepository = subscriptionRepository;
@@ -105,6 +107,7 @@ public class SubscriptionService {
         this.dunningRetryCharge = dunningRetryCharge;
         this.invoiceCancellationPort = invoiceCancellationPort;
         this.outboxEventRepository = outboxEventRepository;
+        this.passwordEncoder = passwordEncoder;
         this.clock = clock;
     }
 
@@ -600,6 +603,8 @@ public class SubscriptionService {
                     .orElseThrow(() -> new IllegalStateException(
                             "JWT identified Customer " + command.existingCustomerId() + " has no matching record"));
         }
-        return customerRepository.save(new Customer(UUID.randomUUID(), command.email()));
+        Customer customer = new Customer(UUID.randomUUID(), command.email());
+        customer.setPasswordHash(passwordEncoder.encode(command.password()));
+        return customerRepository.save(customer);
     }
 }

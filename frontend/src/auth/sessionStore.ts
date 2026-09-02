@@ -3,7 +3,7 @@ const STORAGE_KEY = 'subscription-billing.session';
 export interface StoredSession {
   accessToken: string;
   expiresAt: number;
-  subscriptionId: string;
+  subscriptionId: string | null;
 }
 
 type Listener = (session: StoredSession | null) => void;
@@ -25,11 +25,13 @@ function decodeExpiryMillis(token: string): number {
  * Plain module (not a React context) so the API client's auth middleware — which runs
  * outside the component tree — can read the current session without prop drilling.
  * Holds `subscriptionId` alongside the token because there is no "list my subscriptions"
- * endpoint: signup (POST /subscriptions) is the only place a subscriptionId is ever
- * handed back, so it has to be remembered client-side for every later
- * GET /subscriptions/{id} call. There is also no login/refresh endpoint (ADR-0003), so
- * once a stored token expires there is nothing to silently renew: callers surface that
- * as a signed-out state instead.
+ * endpoint: signup (POST /subscriptions) and login (POST /customers/login, ADR-0008)
+ * are the only places a subscriptionId is ever handed back, so it has to be remembered
+ * client-side for every later GET /subscriptions/{id} call. It's nullable because a
+ * Customer can log in with no current non-canceled Subscription (e.g. after their only
+ * one was canceled) — still a valid session, just nothing to land on but the plans
+ * page. There is no refresh endpoint (ADR-0003), so once a stored token expires there
+ * is nothing to silently renew: callers surface that as a signed-out state instead.
  */
 class SessionStore {
   private listeners = new Set<Listener>();
@@ -53,7 +55,7 @@ class SessionStore {
     return stored;
   }
 
-  set(accessToken: string, subscriptionId: string): void {
+  set(accessToken: string, subscriptionId: string | null): void {
     const stored: StoredSession = {
       accessToken,
       subscriptionId,

@@ -358,7 +358,7 @@ class InvoiceApiIT extends AbstractPostgresIntegrationTest {
         MvcTestResult result = mvc.post().uri("/api/v1/subscriptions")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
-                        {"planId":"%s","email":"%s"}
+                        {"planId":"%s","email":"%s","password":"password123!"}
                         """.formatted(freePlanId(), email))
                 .exchange();
         return readBody(result, SignupResponse.class);
@@ -372,7 +372,7 @@ class InvoiceApiIT extends AbstractPostgresIntegrationTest {
         MvcTestResult result = mvc.post().uri("/api/v1/subscriptions")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
-                        {"planId":"%s","email":"%s","useTrial":false,"paymentMethodToken":"%s"}
+                        {"planId":"%s","email":"%s","useTrial":false,"paymentMethodToken":"%s","password":"password123!"}
                         """.formatted(proPlanId(), email, paymentMethodToken))
                 .exchange();
         return readBody(result, SignupResponse.class);

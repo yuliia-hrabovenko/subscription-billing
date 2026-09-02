@@ -1,6 +1,7 @@
 import { Route, Routes } from 'react-router-dom';
 import { AppLayout } from '../components/AppLayout';
 import { DashboardPage } from '../features/subscription/DashboardPage';
+import { LoginPage } from '../features/subscription/LoginPage';
 import { SignupPage } from '../features/subscription/SignupPage';
 import { InvoiceDetailPage } from '../features/invoices/InvoiceDetailPage';
 import { InvoicesPage } from '../features/invoices/InvoicesPage';
@@ -16,6 +17,7 @@ export function AppRoutes() {
       <Route element={<AppLayout />}>
         <Route index element={<PlansPage />} />
         <Route path="signup" element={<SignupPage />} />
+        <Route path="login" element={<LoginPage />} />
         <Route path="session-expired" element={<SessionExpiredPage />} />
         <Route
           path="dashboard"

@@ -20,6 +20,7 @@ test('browse plans, sign up for the free plan, land on dashboard, then cancel', 
   await expect(page.getByRole('heading', { name: 'Sign up' })).toBeVisible();
 
   await page.getByLabel('Email').fill(`e2e-${Date.now()}@example.com`);
+  await page.getByLabel('Password').fill('password123!');
   await page.getByRole('button', { name: 'Sign up' }).click();
 
   await expect(page.getByRole('heading', { name: 'Your subscription' })).toBeVisible();

@@ -1,6 +1,7 @@
 import { Route, Routes } from 'react-router-dom';
 import { AdminLayout } from '../components/AdminLayout';
 import { AdminLoginPage } from '../features/admin/auth/AdminLoginPage';
+import { AdminSsoCallbackPage } from '../features/admin/auth/AdminSsoCallbackPage';
 import { AdminCustomerDetailPage } from '../features/admin/customers/AdminCustomerDetailPage';
 import { AdminCustomersPage } from '../features/admin/customers/AdminCustomersPage';
 import { AdminInvoiceDetailPage } from '../features/admin/invoices/AdminInvoiceDetailPage';
@@ -14,6 +15,7 @@ export function AdminRoutes() {
   return (
     <Routes>
       <Route path="login" element={<AdminLoginPage />} />
+      <Route path="sso-callback" element={<AdminSsoCallbackPage />} />
       <Route
         element={
           <RequireAdminAuth>

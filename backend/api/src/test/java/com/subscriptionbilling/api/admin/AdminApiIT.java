@@ -8,8 +8,7 @@ import com.subscriptionbilling.api.plan.AdminPlanDetailResponse;
 import com.subscriptionbilling.api.plan.AdminPlanSummaryResponse;
 import com.subscriptionbilling.api.subscription.AdminSubscriptionResponse;
 import com.subscriptionbilling.api.subscription.SignupResponse;
-import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
-import com.subscriptionbilling.billingcore.auth.AdminAuthenticationService;
+import com.subscriptionbilling.api.support.AbstractAdminIntegrationTest;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
 import com.subscriptionbilling.billingcore.subscription.Subscription;
 import com.subscriptionbilling.billingcore.subscription.SubscriptionRepository;
@@ -31,19 +30,20 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * ADMIN role through the HTTP layer: login issues a working token (and
- * rejects wrong credentials), the two roles are mutually exclusive by path (an ADMIN
- * token is rejected on a CUSTOMER endpoint and vice versa, unauthenticated is
- * rejected on {@code /admin/**}), Admin visibility into Customers/Subscriptions/
- * Invoices spans different Customers with no ownership filtering (unlike {@code
- * SubscriptionApiIT}/{@code InvoiceApiIT}'s 403-for-a-different-owner tests), and Plan
- * catalog management (create/retire/reprice) enforces the invariants {@code
- * PlanAdministrationServiceTest} covers at the unit level, visible end-to-end here
- * (e.g. a retired Plan disappears from the public catalog).
+ * ADMIN role through the HTTP layer: a real Keycloak-issued token (ADR-0009) reaches
+ * Admin endpoints, a Keycloak token without the {@code admin} realm role is rejected,
+ * the two roles are mutually exclusive by path (an ADMIN token is rejected on a
+ * CUSTOMER endpoint and vice versa, unauthenticated is rejected on {@code /admin/**}),
+ * Admin visibility into Customers/Subscriptions/Invoices spans different Customers with
+ * no ownership filtering (unlike {@code SubscriptionApiIT}/{@code InvoiceApiIT}'s
+ * 403-for-a-different-owner tests), and Plan catalog management (create/retire/reprice)
+ * enforces the invariants {@code PlanAdministrationServiceTest} covers at the unit
+ * level, visible end-to-end here (e.g. a retired Plan disappears from the public
+ * catalog).
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-class AdminApiIT extends AbstractPostgresIntegrationTest {
+class AdminApiIT extends AbstractAdminIntegrationTest {
 
     @Autowired
     private MockMvcTester mvc;
@@ -64,8 +64,8 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
     private JsonMapper jsonMapper;
 
     @Test
-    void loginWithTheDevDefaultCredentialsIssuesAWorkingAdminToken() {
-        String token = adminLogin();
+    void aRealKeycloakAdminTokenReachesAnAdminEndpoint() {
+        String token = adminToken();
 
         mvc.get().uri("/api/v1/admin/plans")
                 .header("Authorization", "Bearer " + token)
@@ -74,21 +74,16 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void loginWithAWrongPasswordIsRejectedWith401() {
-        mvc.post().uri("/api/v1/admin/login")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("""
-                        {"username":"admin","password":"definitely-not-it"}
-                        """)
+    void aKeycloakTokenWithoutTheAdminRoleIsRejectedWith403() {
+        mvc.get().uri("/api/v1/admin/plans")
+                .header("Authorization", "Bearer " + nonAdminToken())
                 .assertThat()
-                .hasStatus(401)
-                .bodyJson()
-                .extractingPath("$.error.code").asString().isEqualTo("UNAUTHORIZED");
+                .hasStatus(403);
     }
 
     @Test
     void anAdminTokenIsRejectedOnACustomerEndpoint() {
-        String adminToken = adminLogin();
+        String adminToken = adminToken();
         SignupResponse someone = signUp("admin-on-customer-" + UUID.randomUUID() + "@example.com");
 
         mvc.get().uri("/api/v1/subscriptions/{id}", someone.subscriptionId())
@@ -116,7 +111,7 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
 
     @Test
     void adminCanListAndFetchCustomersAcrossDifferentCustomersWithNoOwnershipFiltering() {
-        String adminToken = adminLogin();
+        String adminToken = adminToken();
         SignupResponse first = signUp("admin-visibility-a-" + UUID.randomUUID() + "@example.com");
         SignupResponse second = signUp("admin-visibility-b-" + UUID.randomUUID() + "@example.com");
         Subscription firstSubscription = subscriptionRepository.findById(first.subscriptionId()).orElseThrow();
@@ -136,7 +131,7 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
 
     @Test
     void adminCanFetchAnySubscriptionByIdRegardlessOfOwner() {
-        String adminToken = adminLogin();
+        String adminToken = adminToken();
         SignupResponse owner = signUp("admin-sub-visibility-" + UUID.randomUUID() + "@example.com");
 
         AdminSubscriptionResponse response = readBody(mvc.get().uri("/api/v1/admin/subscriptions/{id}", owner.subscriptionId())
@@ -148,7 +143,7 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
 
     @Test
     void adminCanListAndFetchInvoicesForAnySubscriptionRegardlessOfOwner() {
-        String adminToken = adminLogin();
+        String adminToken = adminToken();
         SignupResponse owner = immediatePaidSignUp("admin-invoice-visibility-" + UUID.randomUUID() + "@example.com");
         LocalDate billingPeriod = LocalDate.of(2026, 3, 31);
         chargeForPeriod(owner.subscriptionId(), billingPeriod);
@@ -168,7 +163,7 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
 
     @Test
     void adminCanCreateAPlanWhichImmediatelyAppearsInTheAdminCatalog() {
-        String adminToken = adminLogin();
+        String adminToken = adminToken();
         String code = "enterprise-" + UUID.randomUUID();
 
         AdminPlanDetailResponse created = readBody(mvc.post().uri("/api/v1/admin/plans")
@@ -192,7 +187,7 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
 
     @Test
     void creatingAPlanWithADuplicateCodeIsRejectedWith409() {
-        String adminToken = adminLogin();
+        String adminToken = adminToken();
         String code = "dup-" + UUID.randomUUID();
         String body = """
                 {"code":"%s","name":"First","initialPrice":"10.00"}
@@ -212,7 +207,7 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
 
     @Test
     void retiringAPlanRemovesItFromThePublicCatalogButItStillAppearsForAdmin() {
-        String adminToken = adminLogin();
+        String adminToken = adminToken();
         String code = "retire-me-" + UUID.randomUUID();
         mvc.post().uri("/api/v1/admin/plans")
                 .header("Authorization", "Bearer " + adminToken)
@@ -241,7 +236,7 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
 
     @Test
     void repricingWithANonMonotonicEffectiveFromIsRejectedWith400() {
-        String adminToken = adminLogin();
+        String adminToken = adminToken();
         String code = "reprice-" + UUID.randomUUID();
         mvc.post().uri("/api/v1/admin/plans")
                 .header("Authorization", "Bearer " + adminToken)
@@ -264,16 +259,6 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
                 .extractingPath("$.error.code").asString().isEqualTo("INVALID_PRICE_VERSION");
     }
 
-    private String adminLogin() {
-        MvcTestResult result = mvc.post().uri("/api/v1/admin/login")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("""
-                        {"username":"admin","password":"%s"}
-                        """.formatted(AdminAuthenticationService.DEV_DEFAULT_PASSWORD))
-                .exchange();
-        return readBody(result, AdminLoginResponse.class).accessToken();
-    }
-
     private void chargeForPeriod(UUID subscriptionId, LocalDate billingPeriod) {
         Subscription subscription = subscriptionRepository.findById(subscriptionId).orElseThrow();
         subscription.advanceDueDate(billingPeriod);
@@ -285,7 +270,7 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
         MvcTestResult result = mvc.post().uri("/api/v1/subscriptions")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
-                        {"planId":"%s","email":"%s"}
+                        {"planId":"%s","email":"%s","password":"password123!"}
                         """.formatted(freePlanId(), email))
                 .exchange();
         return readBody(result, SignupResponse.class);
@@ -295,7 +280,7 @@ class AdminApiIT extends AbstractPostgresIntegrationTest {
         MvcTestResult result = mvc.post().uri("/api/v1/subscriptions")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
-                        {"planId":"%s","email":"%s","useTrial":false,"paymentMethodToken":"gw_tok_abc123"}
+                        {"planId":"%s","email":"%s","useTrial":false,"paymentMethodToken":"gw_tok_abc123","password":"password123!"}
                         """.formatted(proPlanId(), email))
                 .exchange();
         return readBody(result, SignupResponse.class);

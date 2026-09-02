@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface SubscriptionRepository extends JpaRepository<Subscription, UUID> {
@@ -22,6 +23,19 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
      *         for this Customer
      */
     boolean existsByCustomerIdAndStateNot(UUID customerId, SubscriptionState excludedState);
+
+    /**
+     * Backs {@code POST /api/v1/customers/login}: the Customer's current Subscription
+     * (there is at most one non-{@code canceled} Subscription per Customer), used to
+     * populate the frontend session the same way signup's response does. Empty if the
+     * Customer has no non-canceled Subscription (e.g. their only Subscription was
+     * canceled) — login still succeeds in that case, just with nothing to land on but
+     * the plans page.
+     *
+     * @param customerId    the Customer to look up
+     * @param excludedState a state to ignore, always {@link SubscriptionState#CANCELED}
+     */
+    Optional<Subscription> findFirstByCustomerIdAndStateNot(UUID customerId, SubscriptionState excludedState);
 
     /**
      * Backs the billing job's due-Subscription scan (ADR-0001). {@code <=}, never
