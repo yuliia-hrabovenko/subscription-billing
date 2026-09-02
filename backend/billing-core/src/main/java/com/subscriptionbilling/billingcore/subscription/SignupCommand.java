@@ -17,9 +17,12 @@ import java.util.UUID;
  * @param useTrial           ignored for a free-Plan signup, which has no Trial concept
  * @param paymentMethodToken required whenever the target Plan is paid; ignored for a
  *                           free-Plan signup
+ * @param password           used to set a brand-new Customer's login credential when
+ *                           {@code existingCustomerId} is null; ignored otherwise,
+ *                           mirroring {@code email}
  * @param correlationId      rides along on the {@link com.subscriptionbilling.audit.AuditLogEntry}
  *                           this signup writes
  */
 public record SignupCommand(UUID planId, String email, UUID existingCustomerId, boolean useTrial,
-                             String paymentMethodToken, String correlationId) {
+                             String paymentMethodToken, String password, String correlationId) {
 }

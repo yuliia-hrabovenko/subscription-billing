@@ -25,6 +25,9 @@ public class Customer {
     @Column(name = "payment_method_token")
     private String paymentMethodToken;
 
+    @Column(name = "password_hash")
+    private String passwordHash;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -51,6 +54,14 @@ public class Customer {
 
     public void setPaymentMethodToken(String paymentMethodToken) {
         this.paymentMethodToken = paymentMethodToken;
+    }
+
+    public String getPasswordHash() {
+        return passwordHash;
+    }
+
+    public void setPasswordHash(String passwordHash) {
+        this.passwordHash = passwordHash;
     }
 
     public Instant getCreatedAt() {

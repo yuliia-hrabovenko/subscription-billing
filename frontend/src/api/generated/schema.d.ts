@@ -100,6 +100,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/customers/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/plans": {
         parameters: {
             query?: never;
@@ -142,22 +158,6 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["addPriceVersion"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["login"];
         delete?: never;
         options?: never;
         head?: never;
@@ -351,6 +351,7 @@ export interface components {
             email: string;
             useTrial?: boolean;
             paymentMethodToken?: string;
+            password: string;
         };
         BillingCycleRef: {
             /** Format: date-time */
@@ -387,6 +388,15 @@ export interface components {
             /** Format: uuid */
             planId: string;
         };
+        CustomerLoginRequest: {
+            email: string;
+            password: string;
+        };
+        CustomerLoginResponse: {
+            accessToken?: string;
+            /** Format: uuid */
+            subscriptionId?: string;
+        };
         CreatePlanRequest: {
             code: string;
             name: string;
@@ -411,13 +421,6 @@ export interface components {
             amount: number;
             /** Format: date-time */
             effectiveFrom: string;
-        };
-        AdminLoginRequest: {
-            username: string;
-            password: string;
-        };
-        AdminLoginResponse: {
-            accessToken?: string;
         };
         InvoiceListResponse: {
             items?: components["schemas"]["InvoiceSummaryResponse"][];
@@ -658,6 +661,30 @@ export interface operations {
             };
         };
     };
+    login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CustomerLoginRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["CustomerLoginResponse"];
+                };
+            };
+        };
+    };
     listAll: {
         parameters: {
             query?: never;
@@ -746,30 +773,6 @@ export interface operations {
                 };
                 content: {
                     "*/*": components["schemas"]["AdminPlanDetailResponse"];
-                };
-            };
-        };
-    };
-    login: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AdminLoginRequest"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "*/*": components["schemas"]["AdminLoginResponse"];
                 };
             };
         };

@@ -69,7 +69,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         String email = "signup-" + UUID.randomUUID() + "@example.com";
 
         SubscriptionSignupResult result = subscriptionService.signUp(
-                new SignupCommand(freePlanId, email, null, false, null, "corr-it-1"));
+                new SignupCommand(freePlanId, email, null, false, null, "password123!", "corr-it-1"));
 
         assertThat(result.state()).isEqualTo(SubscriptionState.ACTIVE);
         assertThat(result.accessToken()).isNotBlank();
@@ -97,7 +97,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         String email = "trialist-" + UUID.randomUUID() + "@example.com";
 
         SubscriptionSignupResult result = subscriptionService.signUp(
-                new SignupCommand(proPlanId, email, null, true, "gw_tok_abc123", "corr-it-2"));
+                new SignupCommand(proPlanId, email, null, true, "gw_tok_abc123", "password123!", "corr-it-2"));
 
         assertThat(result.state()).isEqualTo(SubscriptionState.TRIALING);
         assertThat(result.trialEndsAt()).isAfter(Instant.now());
@@ -119,7 +119,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         String email = "immediate-" + UUID.randomUUID() + "@example.com";
 
         SubscriptionSignupResult result = subscriptionService.signUp(
-                new SignupCommand(proPlanId, email, null, false, "gw_tok_abc123", "corr-it-3"));
+                new SignupCommand(proPlanId, email, null, false, "gw_tok_abc123", "password123!", "corr-it-3"));
 
         assertThat(result.state()).isEqualTo(SubscriptionState.ACTIVE);
         assertThat(result.trialEndsAt()).isNull();
@@ -135,11 +135,11 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void aSecondSignupAttemptForACustomerWithAnExistingNonCanceledSubscriptionIsRejected() {
         UUID freePlanId = planRepository.findByCode("free").orElseThrow().getId();
         SubscriptionSignupResult firstSignup = subscriptionService.signUp(
-                new SignupCommand(freePlanId, "repeat-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-4"));
+                new SignupCommand(freePlanId, "repeat-" + UUID.randomUUID() + "@example.com", null, false, null, "password123!", "corr-it-4"));
         UUID customerId = subscriptionRepository.findById(firstSignup.subscriptionId()).orElseThrow().getCustomer().getId();
 
         assertThatThrownBy(() -> subscriptionService.signUp(
-                new SignupCommand(freePlanId, null, customerId, false, null, "corr-it-5")))
+                new SignupCommand(freePlanId, null, customerId, false, null, "password123!", "corr-it-5")))
                 .isInstanceOf(DuplicateSubscriptionException.class);
     }
 
@@ -153,7 +153,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         subscriptionRepository.saveAndFlush(canceledSubscription);
 
         SubscriptionSignupResult result = subscriptionService.signUp(
-                new SignupCommand(freePlanId, null, customer.getId(), false, null, "corr-it-6"));
+                new SignupCommand(freePlanId, null, customer.getId(), false, null, "password123!", "corr-it-6"));
 
         assertThat(result.subscriptionId()).isNotEqualTo(canceledSubscription.getId());
         Subscription newSubscription = subscriptionRepository.findById(result.subscriptionId()).orElseThrow();
@@ -169,9 +169,9 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void getOwnSubscriptionDeniesAnotherCustomersValidTokenAccessToItsSubscription() {
         UUID freePlanId = planRepository.findByCode("free").orElseThrow().getId();
         SubscriptionSignupResult ownerSignup = subscriptionService.signUp(
-                new SignupCommand(freePlanId, "owner-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-7"));
+                new SignupCommand(freePlanId, "owner-" + UUID.randomUUID() + "@example.com", null, false, null, "password123!", "corr-it-7"));
         SubscriptionSignupResult otherSignup = subscriptionService.signUp(
-                new SignupCommand(freePlanId, "other-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-8"));
+                new SignupCommand(freePlanId, "other-" + UUID.randomUUID() + "@example.com", null, false, null, "password123!", "corr-it-8"));
 
         Subscription otherSubscription = subscriptionRepository.findById(otherSignup.subscriptionId()).orElseThrow();
         UUID ownerCustomerId = subscriptionRepository.findById(ownerSignup.subscriptionId())
@@ -186,7 +186,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void cancelFromTrialingPersistsCanceledImmediately() {
         UUID proPlanId = planRepository.findByCode("pro").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                proPlanId, "trialist-" + UUID.randomUUID() + "@example.com", null, true, "gw_tok_abc123", "corr-it-9"));
+                proPlanId, "trialist-" + UUID.randomUUID() + "@example.com", null, true, "gw_tok_abc123", "password123!", "corr-it-9"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
 
         subscriptionService.cancel(signup.subscriptionId(), customerId, null, "corr-it-10");
@@ -205,7 +205,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void cancelFromActiveWithABillingCyclePersistsPendingCancellationWithPlanUnchanged() {
         UUID proPlanId = planRepository.findByCode("pro").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                proPlanId, "active-" + UUID.randomUUID() + "@example.com", null, false, "gw_tok_abc123", "corr-it-11"));
+                proPlanId, "active-" + UUID.randomUUID() + "@example.com", null, false, "gw_tok_abc123", "password123!", "corr-it-11"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
 
         subscriptionService.cancel(signup.subscriptionId(), customerId, null, "corr-it-12");
@@ -223,7 +223,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         // of it).
         UUID freePlanId = planRepository.findByCode("free").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                freePlanId, "free-active-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-11b"));
+                freePlanId, "free-active-" + UUID.randomUUID() + "@example.com", null, false, null, "password123!", "corr-it-11b"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
 
         subscriptionService.cancel(signup.subscriptionId(), customerId, null, "corr-it-12b");
@@ -251,7 +251,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void cancelOnAnAlreadyPendingCancellationSubscriptionIsRejected() {
         UUID proPlanId = planRepository.findByCode("pro").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                proPlanId, "double-cancel-" + UUID.randomUUID() + "@example.com", null, false, "gw_tok_abc123", "corr-it-14"));
+                proPlanId, "double-cancel-" + UUID.randomUUID() + "@example.com", null, false, "gw_tok_abc123", "password123!", "corr-it-14"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
         subscriptionService.cancel(signup.subscriptionId(), customerId, null, "corr-it-15");
 
@@ -263,7 +263,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void cancelOnAnAlreadyCanceledSubscriptionIsRejected() {
         UUID freePlanId = planRepository.findByCode("free").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                freePlanId, "double-cancel-free-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-14b"));
+                freePlanId, "double-cancel-free-" + UUID.randomUUID() + "@example.com", null, false, null, "password123!", "corr-it-14b"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
         subscriptionService.cancel(signup.subscriptionId(), customerId, null, "corr-it-15b");
 
@@ -275,7 +275,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void undoCancelFromPendingCancellationPersistsActive() {
         UUID proPlanId = planRepository.findByCode("pro").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                proPlanId, "undo-" + UUID.randomUUID() + "@example.com", null, false, "gw_tok_abc123", "corr-it-17"));
+                proPlanId, "undo-" + UUID.randomUUID() + "@example.com", null, false, "gw_tok_abc123", "password123!", "corr-it-17"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
         subscriptionService.cancel(signup.subscriptionId(), customerId, null, "corr-it-18");
 
@@ -289,7 +289,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void undoCancelFromAnyOtherStateIsRejected() {
         UUID freePlanId = planRepository.findByCode("free").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                freePlanId, "undo-reject-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-20"));
+                freePlanId, "undo-reject-" + UUID.randomUUID() + "@example.com", null, false, null, "password123!", "corr-it-20"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
 
         assertThatThrownBy(() -> subscriptionService.undoCancel(signup.subscriptionId(), customerId, null, "corr-it-21"))
@@ -300,7 +300,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void aRepeatedCancelWithTheSameIdempotencyKeyPersistsExactlyOneAuditLogEntryAndDoesNotDoubleApply() {
         UUID proPlanId = planRepository.findByCode("pro").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                proPlanId, "idem-cancel-" + UUID.randomUUID() + "@example.com", null, false, "gw_tok_abc123", "corr-it-22"));
+                proPlanId, "idem-cancel-" + UUID.randomUUID() + "@example.com", null, false, "gw_tok_abc123", "password123!", "corr-it-22"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
         String idempotencyKey = "idem-key-" + UUID.randomUUID();
 
@@ -327,7 +327,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         // exception from the "losing" caller instead of a graceful deduplicated result.
         UUID freePlanId = planRepository.findByCode("free").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                freePlanId, "concurrent-cancel-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-25"));
+                freePlanId, "concurrent-cancel-" + UUID.randomUUID() + "@example.com", null, false, null, "password123!", "corr-it-25"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
         String idempotencyKey = "concurrent-key-" + UUID.randomUUID();
 
@@ -376,7 +376,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         // short-circuited into a fabricated 200 instead of the same rejection.
         UUID freePlanId = planRepository.findByCode("free").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                freePlanId, "idem-release-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-31"));
+                freePlanId, "idem-release-" + UUID.randomUUID() + "@example.com", null, false, null, "password123!", "corr-it-31"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
         // Pre-cancel (no idempotency key) so the Subscription is already CANCELED
         // before the key-bearing attempts below.
@@ -401,7 +401,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         // it, since each repository call would auto-commit on its own).
         UUID freePlanId = planRepository.findByCode("free").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                freePlanId, "idem-expired-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-35"));
+                freePlanId, "idem-expired-" + UUID.randomUUID() + "@example.com", null, false, null, "password123!", "corr-it-35"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
         String idempotencyKey = "idem-expired-key-" + UUID.randomUUID();
         Instant longAgo = Instant.now().minusSeconds(3600);
@@ -423,7 +423,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         // @Version field is what must catch this, not luck in thread scheduling.
         UUID freePlanId = planRepository.findByCode("free").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                freePlanId, "stale-write-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-29"));
+                freePlanId, "stale-write-" + UUID.randomUUID() + "@example.com", null, false, null, "password123!", "corr-it-29"));
         UUID customerId = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow().getCustomer().getId();
         Subscription staleCopy = subscriptionRepository.findById(signup.subscriptionId()).orElseThrow();
 
@@ -447,7 +447,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void suspendWritesExactlyOnePaymentFailedOutboxEventInTheSameTransactionAsTheSuspension() {
         UUID proPlanId = planRepository.findByCode("pro").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                proPlanId, "suspend-it-" + UUID.randomUUID() + "@example.com", null, false, "gw_tok_abc123", "corr-it-37"));
+                proPlanId, "suspend-it-" + UUID.randomUUID() + "@example.com", null, false, "gw_tok_abc123", "password123!", "corr-it-37"));
         UUID invoiceId = UUID.randomUUID();
 
         subscriptionService.suspend(signup.subscriptionId(), LocalDate.of(2026, 8, 1), invoiceId.toString());
@@ -464,7 +464,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void aRejectedSuspendOnAnIneligibleStateWritesNoOutboxEvent() {
         UUID freePlanId = planRepository.findByCode("free").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                freePlanId, "suspend-reject-it-" + UUID.randomUUID() + "@example.com", null, false, null, "corr-it-38"));
+                freePlanId, "suspend-reject-it-" + UUID.randomUUID() + "@example.com", null, false, null, "password123!", "corr-it-38"));
         subscriptionService.cancel(signup.subscriptionId(), subscriptionRepository.findById(signup.subscriptionId())
                 .orElseThrow().getCustomer().getId(), null, "corr-it-39");
 
@@ -479,7 +479,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
     void notifyTrialEndingSoonWritesExactlyOneTrialEndingSoonOutboxEventAndMarksTheSubscriptionNotified() {
         UUID proPlanId = planRepository.findByCode("pro").orElseThrow().getId();
         SubscriptionSignupResult signup = subscriptionService.signUp(new SignupCommand(
-                proPlanId, "trial-ending-soon-it-" + UUID.randomUUID() + "@example.com", null, true, "gw_tok_abc123", "corr-it-41"));
+                proPlanId, "trial-ending-soon-it-" + UUID.randomUUID() + "@example.com", null, true, "gw_tok_abc123", "password123!", "corr-it-41"));
         Instant notifiedAt = Instant.parse("2026-08-30T00:00:00Z");
 
         subscriptionService.notifyTrialEndingSoon(signup.subscriptionId(), notifiedAt);

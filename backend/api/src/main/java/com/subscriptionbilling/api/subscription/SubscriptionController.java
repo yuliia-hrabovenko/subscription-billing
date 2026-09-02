@@ -43,7 +43,7 @@ public class SubscriptionController {
         UUID existingCustomerId = jwt != null ? UUID.fromString(jwt.getSubject()) : null;
         SignupCommand command = new SignupCommand(
                 request.planId(), request.email(), existingCustomerId, request.useTrialOrDefault(),
-                request.paymentMethodToken(), CorrelationIds.current());
+                request.paymentMethodToken(), request.password(), CorrelationIds.current());
         SubscriptionSignupResult result = subscriptionService.signUp(command);
         return ResponseEntity.status(HttpStatus.CREATED).body(SignupResponse.from(result));
     }

@@ -4,7 +4,7 @@ import type { StoredSession } from './sessionStore';
 export interface AuthContextValue {
   session: StoredSession | null;
   isAuthenticated: boolean;
-  signIn: (accessToken: string, subscriptionId: string) => void;
+  signIn: (accessToken: string, subscriptionId: string | null) => void;
   signOut: () => void;
 }
 

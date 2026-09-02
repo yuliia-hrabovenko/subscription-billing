@@ -132,7 +132,7 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
         mvc.post().uri("/api/v1/subscriptions")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
-                        {"planId":"%s","email":"%s","useTrial":true}
+                        {"planId":"%s","email":"%s","useTrial":true,"password":"password123!"}
                         """.formatted(proPlanId(), "nopayment-" + UUID.randomUUID() + "@example.com"))
                 .assertThat()
                 .hasStatus(400)
@@ -860,13 +860,13 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
 
     private String signupBody(UUID planId, String email) {
         return """
-                {"planId":"%s","email":"%s"}
+                {"planId":"%s","email":"%s","password":"password123!"}
                 """.formatted(planId, email);
     }
 
     private String trialSignupBody(UUID planId, String email) {
         return """
-                {"planId":"%s","email":"%s","useTrial":true,"paymentMethodToken":"gw_tok_abc123"}
+                {"planId":"%s","email":"%s","useTrial":true,"paymentMethodToken":"gw_tok_abc123","password":"password123!"}
                 """.formatted(planId, email);
     }
 
@@ -876,7 +876,7 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
 
     private String immediatePaidSignupBody(UUID planId, String email, String paymentMethodToken) {
         return """
-                {"planId":"%s","email":"%s","useTrial":false,"paymentMethodToken":"%s"}
+                {"planId":"%s","email":"%s","useTrial":false,"paymentMethodToken":"%s","password":"password123!"}
                 """.formatted(planId, email, paymentMethodToken);
     }
 }

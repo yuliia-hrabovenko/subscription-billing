@@ -27,6 +27,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -81,6 +82,8 @@ class SubscriptionServiceTest {
     private InvoiceCancellationPort invoiceCancellationPort;
     @Mock
     private OutboxEventRepository outboxEventRepository;
+    @Mock
+    private PasswordEncoder passwordEncoder;
 
     private final UUID planId = UUID.randomUUID();
     private final Plan freePlan = new Plan(planId, "free", "Free");
@@ -90,7 +93,7 @@ class SubscriptionServiceTest {
         return new SubscriptionService(customerRepository, planRepository, subscriptionRepository,
                 planCatalogService, auditLogEntryRepository, tokenIssuer, idempotencyService,
                 chargeableSubscriptionPort, dunningRetryCharge, invoiceCancellationPort, outboxEventRepository,
-                Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
+                passwordEncoder, Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
     }
 
     @Test
@@ -100,9 +103,10 @@ class SubscriptionServiceTest {
         when(customerRepository.save(any(Customer.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(planRepository.getReferenceById(planId)).thenReturn(freePlan);
         when(tokenIssuer.issueFor(any())).thenReturn("minted-token");
+        when(passwordEncoder.encode("password123!")).thenReturn("hashed-password123!");
 
         SubscriptionSignupResult result = service().signUp(
-                new SignupCommand(planId, "user@example.com", null, false, null, "corr-1"));
+                new SignupCommand(planId, "user@example.com", null, false, null, "password123!", "corr-1"));
 
         assertThat(result.state()).isEqualTo(SubscriptionState.ACTIVE);
         assertThat(result.planId()).isEqualTo(planId);
@@ -117,6 +121,7 @@ class SubscriptionServiceTest {
         ArgumentCaptor<Customer> savedCustomer = ArgumentCaptor.forClass(Customer.class);
         verify(customerRepository).save(savedCustomer.capture());
         assertThat(savedCustomer.getValue().getEmail()).isEqualTo("user@example.com");
+        assertThat(savedCustomer.getValue().getPasswordHash()).isEqualTo("hashed-password123!");
 
         ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditLogEntryRepository).append(auditEntry.capture());
@@ -138,7 +143,7 @@ class SubscriptionServiceTest {
         when(planRepository.getReferenceById(planId)).thenReturn(freePlan);
         when(tokenIssuer.issueFor(existingCustomerId)).thenReturn("minted-token");
 
-        service().signUp(new SignupCommand(planId, null, existingCustomerId, false, null, "corr-2"));
+        service().signUp(new SignupCommand(planId, null, existingCustomerId, false, null, "password123!", "corr-2"));
 
         verify(customerRepository, never()).save(any());
         verify(tokenIssuer).issueFor(existingCustomerId);
@@ -148,7 +153,7 @@ class SubscriptionServiceTest {
     void signupForAPlanThatIsNotAvailableIsRejected() {
         when(planCatalogService.findAvailablePlan(planId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service().signUp(new SignupCommand(planId, "user@example.com", null, false, null, "corr-3")))
+        assertThatThrownBy(() -> service().signUp(new SignupCommand(planId, "user@example.com", null, false, null, "password123!", "corr-3")))
                 .isInstanceOf(PlanUnavailableForSignupException.class);
 
         verify(subscriptionRepository, never()).save(any());
@@ -165,7 +170,7 @@ class SubscriptionServiceTest {
                 .thenReturn(true);
 
         assertThatThrownBy(() -> service().signUp(
-                new SignupCommand(planId, null, existingCustomerId, false, null, "corr-4")))
+                new SignupCommand(planId, null, existingCustomerId, false, null, "password123!", "corr-4")))
                 .isInstanceOf(DuplicateSubscriptionException.class);
 
         verify(subscriptionRepository, never()).save(any());
@@ -180,7 +185,7 @@ class SubscriptionServiceTest {
         when(tokenIssuer.issueFor(any())).thenReturn("minted-token");
 
         SubscriptionSignupResult result = service().signUp(
-                new SignupCommand(planId, "trialist@example.com", null, true, "gw_tok_abc123", "corr-5"));
+                new SignupCommand(planId, "trialist@example.com", null, true, "gw_tok_abc123", "password123!", "corr-5"));
 
         assertThat(result.state()).isEqualTo(SubscriptionState.TRIALING);
         assertThat(result.trialEndsAt()).isEqualTo(FIXED_NOW.plus(SubscriptionService.TRIAL_DURATION));
@@ -212,7 +217,7 @@ class SubscriptionServiceTest {
         when(tokenIssuer.issueFor(any())).thenReturn("minted-token");
 
         SubscriptionSignupResult result = service().signUp(
-                new SignupCommand(planId, "immediate@example.com", null, false, "gw_tok_abc123", "corr-6"));
+                new SignupCommand(planId, "immediate@example.com", null, false, "gw_tok_abc123", "password123!", "corr-6"));
 
         assertThat(result.state()).isEqualTo(SubscriptionState.ACTIVE);
         assertThat(result.trialEndsAt()).isNull();
@@ -237,7 +242,7 @@ class SubscriptionServiceTest {
                 .thenReturn(Optional.of(new PlanSummary(planId, "pro", "Pro", new BigDecimal("19.00"))));
 
         assertThatThrownBy(() -> service().signUp(
-                new SignupCommand(planId, "trialist@example.com", null, true, null, "corr-7")))
+                new SignupCommand(planId, "trialist@example.com", null, true, null, "password123!", "corr-7")))
                 .isInstanceOf(PaymentMethodRequiredException.class);
 
         verify(subscriptionRepository, never()).save(any());
@@ -249,7 +254,7 @@ class SubscriptionServiceTest {
                 .thenReturn(Optional.of(new PlanSummary(planId, "pro", "Pro", new BigDecimal("19.00"))));
 
         assertThatThrownBy(() -> service().signUp(
-                new SignupCommand(planId, "immediate@example.com", null, false, "   ", "corr-8")))
+                new SignupCommand(planId, "immediate@example.com", null, false, "   ", "password123!", "corr-8")))
                 .isInstanceOf(PaymentMethodRequiredException.class);
 
         verify(subscriptionRepository, never()).save(any());

@@ -1,8 +1,8 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Button, Checkbox, FormControlLabel, Stack, TextField, Typography } from '@mui/material';
+import { Button, Checkbox, FormControlLabel, Link as MuiLink, Stack, TextField, Typography } from '@mui/material';
 import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../auth/useAuth';
 import { ErrorState } from '../../components/ErrorState';
 import { signupFormSchema, type SignupFormValues } from '../../schemas/signup';
@@ -22,7 +22,7 @@ export function SignupPage() {
     formState: { errors },
   } = useForm<SignupFormValues>({
     resolver: zodResolver(signupFormSchema),
-    defaultValues: { email: '', useTrial: false, paymentMethodToken: undefined },
+    defaultValues: { email: '', password: '', useTrial: false, paymentMethodToken: undefined },
   });
 
   if (!planId) {
@@ -31,7 +31,15 @@ export function SignupPage() {
 
   const onSubmit = (values: SignupFormValues) => {
     signup.mutate(
-      { body: { planId, email: values.email, useTrial: values.useTrial, paymentMethodToken: values.paymentMethodToken } },
+      {
+        body: {
+          planId,
+          email: values.email,
+          password: values.password,
+          useTrial: values.useTrial,
+          paymentMethodToken: values.paymentMethodToken,
+        },
+      },
       {
         onSuccess: (data) => {
           // The generated types mark these optional because the backend's OpenAPI spec
@@ -65,6 +73,21 @@ export function SignupPage() {
       />
 
       <Controller
+        name="password"
+        control={control}
+        render={({ field }) => (
+          <TextField
+            {...field}
+            label="Password"
+            type="password"
+            error={!!errors.password}
+            helperText={errors.password?.message}
+            required
+          />
+        )}
+      />
+
+      <Controller
         name="useTrial"
         control={control}
         render={({ field }) => (
@@ -94,6 +117,10 @@ export function SignupPage() {
       <Button type="submit" variant="contained" disabled={signup.isPending}>
         {signup.isPending ? 'Signing up…' : 'Sign up'}
       </Button>
+
+      <Typography variant="body2">
+        Already have an account? <MuiLink component={RouterLink} to="/login">Log in</MuiLink>
+      </Typography>
     </Stack>
   );
 }

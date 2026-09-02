@@ -19,8 +19,8 @@ import java.util.UUID;
  *
  * <p>The single {@code role} claim is deliberate, not a placeholder for a richer claims
  * model: every Customer-side authorization decision beyond that role is a
- * service-layer ownership check, not a token claim. A second role value ({@code
- * ADMIN}, see {@link AdminTokenIssuer}, now exists too, but carries no
+ * service-layer ownership check, not a token claim. A second role value ({@code ADMIN})
+ * also exists, but is Keycloak-issued rather than self-issued and carries no
  * ownership semantics at all — an Admin isn't scoped to "their own" data the way a
  * Customer is.
  */

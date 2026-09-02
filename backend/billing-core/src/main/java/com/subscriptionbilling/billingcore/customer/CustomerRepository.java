@@ -7,9 +7,16 @@ import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface CustomerRepository extends JpaRepository<Customer, UUID> {
+
+    /**
+     * Backs {@code POST /api/v1/customers/login} — looks up the Customer a submitted
+     * email claims to be before checking their password.
+     */
+    Optional<Customer> findByEmail(String email);
 
     /**
      * Backs the Admin customer list endpoint's reverse-chronological cursor pagination

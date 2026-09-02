@@ -469,13 +469,13 @@ class AuditLogEntryStateTransitionCoverageIT extends AbstractPostgresIntegration
 
     private String signupBody(UUID planId, String email) {
         return """
-                {"planId":"%s","email":"%s"}
+                {"planId":"%s","email":"%s","password":"password123!"}
                 """.formatted(planId, email);
     }
 
     private String trialSignupBody(UUID planId, String email) {
         return """
-                {"planId":"%s","email":"%s","useTrial":true,"paymentMethodToken":"gw_tok_abc123"}
+                {"planId":"%s","email":"%s","useTrial":true,"paymentMethodToken":"gw_tok_abc123","password":"password123!"}
                 """.formatted(planId, email);
     }
 
@@ -485,7 +485,7 @@ class AuditLogEntryStateTransitionCoverageIT extends AbstractPostgresIntegration
 
     private String immediatePaidSignupBody(UUID planId, String email, String paymentMethodToken) {
         return """
-                {"planId":"%s","email":"%s","useTrial":false,"paymentMethodToken":"%s"}
+                {"planId":"%s","email":"%s","useTrial":false,"paymentMethodToken":"%s","password":"password123!"}
                 """.formatted(planId, email, paymentMethodToken);
     }
 }
