@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 const API_BASE_URL = process.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
-const ADMIN_USERNAME = 'admin';
-const ADMIN_PASSWORD = 'dev-only-admin-password-override-with-ADMIN_PASSWORD_HASH';
+// The dev admin user seeded by docker/keycloak/realm-export.json (ADR-0009).
+const ADMIN_SSO_USERNAME = 'admin@example.com';
+const ADMIN_SSO_PASSWORD = 'admin-dev-password';
 
 let seededCustomerEmail = '';
 
@@ -10,7 +11,8 @@ test.beforeAll(async ({ request }) => {
   const plansResponse = await request.get(`${API_BASE_URL}/api/v1/plans`).catch(() => null);
   if (!plansResponse?.ok()) {
     throw new Error(
-      `Backend not reachable at ${API_BASE_URL} -- start it first: mvn -pl api spring-boot:run (with docker-compose's postgres up).`,
+      `Backend not reachable at ${API_BASE_URL} -- start it first: mvn -pl api spring-boot:run ` +
+        "(with docker-compose's postgres and keycloak up -- the admin-login test needs a real Keycloak redirect).",
     );
   }
 
@@ -19,18 +21,24 @@ test.beforeAll(async ({ request }) => {
   const [freePlan] = await plansResponse.json();
   seededCustomerEmail = `admin-e2e-${Date.now()}@example.com`;
   const signupResponse = await request.post(`${API_BASE_URL}/api/v1/subscriptions`, {
-    data: { planId: freePlan.id, email: seededCustomerEmail, useTrial: true },
+    data: { planId: freePlan.id, email: seededCustomerEmail, useTrial: true, password: 'password123!' },
   });
   if (!signupResponse.ok()) {
     throw new Error('Failed to seed a customer for the admin e2e test');
   }
 });
 
-test('admin logs in, manages a plan, and drills into a customer', async ({ page }) => {
+test('admin logs in via Keycloak SSO, manages a plan, and drills into a customer', async ({ page }) => {
   await page.goto('/admin/login');
-  await page.getByLabel('Username').fill(ADMIN_USERNAME);
-  await page.getByLabel('Password').fill(ADMIN_PASSWORD);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByRole('button', { name: 'Sign in with SSO' }).click();
+
+  // Redirected to Keycloak's own hosted login page (default theme field ids).
+  await page.waitForURL(/\/realms\/.+\/protocol\/openid-connect\/auth/);
+  await page.locator('#username').fill(ADMIN_SSO_USERNAME);
+  await page.locator('#password').fill(ADMIN_SSO_PASSWORD);
+  await page.locator('#kc-login').click();
+
+  // Redirected back through /admin/sso-callback and on to the overview page.
   await page.waitForURL('**/admin');
   await expect(page.getByText('Total plans')).toBeVisible();
 

@@ -240,6 +240,36 @@
         }
       }
     },
+    "/api/v1/customers/login": {
+      "post": {
+        "tags": [
+          "customer-login-controller"
+        ],
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerLoginResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/plans": {
       "get": {
         "tags": [
@@ -356,36 +386,6 @@
               "*/*": {
                 "schema": {
                   "$ref": "#/components/schemas/AdminPlanDetailResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/admin/login": {
-      "post": {
-        "tags": [
-          "admin-login-controller"
-        ],
-        "operationId": "login",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminLoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "*/*": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminLoginResponse"
                 }
               }
             }
@@ -786,10 +786,16 @@
           },
           "paymentMethodToken": {
             "type": "string"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 2147483647,
+            "minLength": 8
           }
         },
         "required": [
           "email",
+          "password",
           "planId"
         ]
       },
@@ -880,6 +886,35 @@
           "planId"
         ]
       },
+      "CustomerLoginRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "minLength": 1
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "CustomerLoginResponse": {
+        "type": "object",
+        "properties": {
+          "accessToken": {
+            "type": "string"
+          },
+          "subscriptionId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "CreatePlanRequest": {
         "type": "object",
         "properties": {
@@ -958,31 +993,6 @@
           "amount",
           "effectiveFrom"
         ]
-      },
-      "AdminLoginRequest": {
-        "type": "object",
-        "properties": {
-          "username": {
-            "type": "string",
-            "minLength": 1
-          },
-          "password": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "password",
-          "username"
-        ]
-      },
-      "AdminLoginResponse": {
-        "type": "object",
-        "properties": {
-          "accessToken": {
-            "type": "string"
-          }
-        }
       },
       "InvoiceListResponse": {
         "type": "object",

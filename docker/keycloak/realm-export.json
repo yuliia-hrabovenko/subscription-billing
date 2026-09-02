@@ -1,0 +1,39 @@
+{
+  "realm": "subscription-billing",
+  "enabled": true,
+  "roles": {
+    "realm": [
+      { "name": "admin", "description": "Grants access to the subscription-billing Admin console" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "admin-console",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost:5173/admin/sso-callback"],
+      "webOrigins": ["http://localhost:5173"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "admin@example.com",
+      "email": "admin@example.com",
+      "firstName": "Admin",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "requiredActions": [],
+      "credentials": [
+        { "type": "password", "value": "admin-dev-password", "temporary": false }
+      ],
+      "realmRoles": ["admin"]
+    }
+  ]
+}

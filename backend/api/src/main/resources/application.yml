@@ -33,9 +33,11 @@ billing:
       # Dev-only fallback baked into JwtProperties itself; override via this env var in
       # every real environment (same convention as this file's DB_PASSWORD default).
       secret: ${JWT_SECRET:dev-only-jwt-signing-secret-override-with-JWT_SECRET-env-var-in-every-real-environment}
-    admin:
-      username: ${ADMIN_USERNAME:admin}
-      password-hash: ${ADMIN_PASSWORD_HASH:}
+    admin-sso:
+      # Admin sign-in via Keycloak. Dev defaults point at docker-compose's
+      # keycloak service/realm; override both in every real environment.
+      issuer-uri: ${ADMIN_SSO_ISSUER_URI:http://localhost:8180/realms/subscription-billing}
+      admin-role: ${ADMIN_SSO_ROLE:admin}
   payments:
     stripe:
       # Dev-only fallback baked into StripeProperties itself; override via this env var

@@ -1,6 +1,6 @@
 package com.subscriptionbilling.api.error;
 
-import com.subscriptionbilling.billingcore.auth.AdminAuthenticationException;
+import com.subscriptionbilling.billingcore.auth.CustomerAuthenticationException;
 import com.subscriptionbilling.billingcore.customer.CustomerNotFoundException;
 import com.subscriptionbilling.billingcore.customer.InvalidCustomerCursorException;
 import com.subscriptionbilling.billingcore.plan.InvalidPriceVersionException;
@@ -108,12 +108,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Submitted admin credentials didn't match — 401, the same status a
-     * missing/invalid Customer bearer token gets, since both mean "this caller isn't
-     * who it claims to be."
+     * Submitted customer login credentials didn't match — 401, the same status a
+     * missing/invalid bearer token gets, since both mean "this caller isn't who it
+     * claims to be." Admin sign-in has no password of its own to reject this way
+     * anymore — a rejected Keycloak token is a resource-server concern,
+     * handled by {@code ApiAuthenticationEntryPoint}/{@code ApiAccessDeniedHandler}.
      */
-    @ExceptionHandler(AdminAuthenticationException.class)
-    public ResponseEntity<Object> handleAdminAuthentication(AdminAuthenticationException ex) {
+    @ExceptionHandler(CustomerAuthenticationException.class)
+    public ResponseEntity<Object> handleLoginAuthentication(CustomerAuthenticationException ex) {
         return respond(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", ex.getMessage());
     }
 
