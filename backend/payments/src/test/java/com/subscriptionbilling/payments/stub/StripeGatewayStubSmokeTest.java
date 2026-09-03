@@ -27,17 +27,16 @@ class StripeGatewayStubSmokeTest {
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
     @Test
-    void successStubReturnsASucceededCharge() throws Exception {
-        HttpResponse<String> response = postCharge(StripeGatewayStub.SUCCESS_TOKEN);
+    void successStubReturnsASucceededPaymentIntent() throws Exception {
+        HttpResponse<String> response = postPaymentIntent(StripeGatewayStub.SUCCESS_TOKEN);
 
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(JsonPath.<String>read(response.body(), "$.status")).isEqualTo("succeeded");
-        assertThat(JsonPath.<Boolean>read(response.body(), "$.paid")).isTrue();
     }
 
     @Test
     void declinedStubReturnsStripesCardDeclinedErrorShape() throws Exception {
-        HttpResponse<String> response = postCharge(StripeGatewayStub.DECLINED_TOKEN);
+        HttpResponse<String> response = postPaymentIntent(StripeGatewayStub.DECLINED_TOKEN);
 
         assertThat(response.statusCode()).isEqualTo(402);
         assertThat(JsonPath.<String>read(response.body(), "$.error.type")).isEqualTo("card_error");
@@ -45,10 +44,10 @@ class StripeGatewayStubSmokeTest {
     }
 
     @Test
-    void timeoutStubDelaysBeforeReturningACharge() throws Exception {
+    void timeoutStubDelaysBeforeReturningAPaymentIntent() throws Exception {
         Instant start = Instant.now();
 
-        HttpResponse<String> response = postCharge(StripeGatewayStub.TIMEOUT_TOKEN);
+        HttpResponse<String> response = postPaymentIntent(StripeGatewayStub.TIMEOUT_TOKEN);
 
         assertThat(Duration.between(start, Instant.now()).toMillis())
                 .isGreaterThanOrEqualTo(StripeGatewayStub.TIMEOUT_DELAY_MILLIS);
@@ -69,11 +68,12 @@ class StripeGatewayStubSmokeTest {
         assertThat(JsonPath.<String>read(response.body(), "$.data.object.reason")).isEqualTo("fraudulent");
     }
 
-    private HttpResponse<String> postCharge(String sourceToken) throws Exception {
+    private HttpResponse<String> postPaymentIntent(String paymentMethodToken) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(wireMock.getRuntimeInfo().getHttpBaseUrl() + StripeGatewayStub.CHARGES_PATH))
+                .uri(URI.create(wireMock.getRuntimeInfo().getHttpBaseUrl() + StripeGatewayStub.PAYMENT_INTENTS_PATH))
                 .header("Content-Type", "application/x-www-form-urlencoded")
-                .POST(HttpRequest.BodyPublishers.ofString("amount=1999&currency=usd&source=" + sourceToken))
+                .POST(HttpRequest.BodyPublishers.ofString(
+                        "amount=1999&currency=usd&payment_method=" + paymentMethodToken + "&confirm=true&off_session=true"))
                 .build();
 
         return httpClient.send(request, HttpResponse.BodyHandlers.ofString());

@@ -3,9 +3,6 @@ package com.subscriptionbilling.billingcore.subscription;
 import com.subscriptionbilling.audit.ActorType;
 import com.subscriptionbilling.audit.AuditLogEntry;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
-import com.subscriptionbilling.billingcore.auth.CustomerTokenIssuer;
-import com.subscriptionbilling.billingcore.customer.Customer;
-import com.subscriptionbilling.billingcore.customer.CustomerRepository;
 import com.subscriptionbilling.billingcore.idempotency.IdempotencyService;
 import com.subscriptionbilling.billingcore.plan.Plan;
 import com.subscriptionbilling.billingcore.plan.PlanCatalogService;
@@ -18,10 +15,10 @@ import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryChargeResult;
 import com.subscriptionbilling.billingjob.invoicing.InvoiceCancellationPort;
+import com.subscriptionbilling.billingjob.paymentmethod.PaymentMethodOnboardingPort;
 import com.subscriptionbilling.notifications.outbox.OutboxEvent;
 import com.subscriptionbilling.notifications.outbox.OutboxEventRepository;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -64,50 +61,50 @@ public class SubscriptionService {
     /** {@link IdempotencyService} operation name for {@link #retryPayment}. */
     static final String RETRY_PAYMENT_OPERATION = "retry-payment";
 
-    private final CustomerRepository customerRepository;
     private final PlanRepository planRepository;
     private final SubscriptionRepository subscriptionRepository;
     private final PlanCatalogService planCatalogService;
     private final AuditLogEntryRepository auditLogEntryRepository;
-    private final CustomerTokenIssuer tokenIssuer;
     private final IdempotencyService idempotencyService;
     private final ChargeableSubscriptionPort chargeableSubscriptionPort;
     private final DunningRetryCharge dunningRetryCharge;
     private final InvoiceCancellationPort invoiceCancellationPort;
     private final OutboxEventRepository outboxEventRepository;
-    private final PasswordEncoder passwordEncoder;
+    private final PaymentMethodOnboardingPort paymentMethodOnboardingPort;
+    private final SubscriptionSignupWriter signupWriter;
     private final Clock clock;
 
     @Autowired
-    public SubscriptionService(CustomerRepository customerRepository, PlanRepository planRepository,
+    public SubscriptionService(PlanRepository planRepository,
                                 SubscriptionRepository subscriptionRepository, PlanCatalogService planCatalogService,
-                                AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
+                                AuditLogEntryRepository auditLogEntryRepository,
                                 IdempotencyService idempotencyService, ChargeableSubscriptionPort chargeableSubscriptionPort,
                                 DunningRetryCharge dunningRetryCharge, InvoiceCancellationPort invoiceCancellationPort,
-                                OutboxEventRepository outboxEventRepository, PasswordEncoder passwordEncoder) {
-        this(customerRepository, planRepository, subscriptionRepository, planCatalogService, auditLogEntryRepository,
-                tokenIssuer, idempotencyService, chargeableSubscriptionPort, dunningRetryCharge, invoiceCancellationPort,
-                outboxEventRepository, passwordEncoder, Clock.systemUTC());
+                                OutboxEventRepository outboxEventRepository, PaymentMethodOnboardingPort paymentMethodOnboardingPort,
+                                SubscriptionSignupWriter signupWriter) {
+        this(planRepository, subscriptionRepository, planCatalogService, auditLogEntryRepository,
+                idempotencyService, chargeableSubscriptionPort, dunningRetryCharge, invoiceCancellationPort,
+                outboxEventRepository, paymentMethodOnboardingPort, signupWriter, Clock.systemUTC());
     }
 
-    SubscriptionService(CustomerRepository customerRepository, PlanRepository planRepository,
+    SubscriptionService(PlanRepository planRepository,
                          SubscriptionRepository subscriptionRepository, PlanCatalogService planCatalogService,
-                         AuditLogEntryRepository auditLogEntryRepository, CustomerTokenIssuer tokenIssuer,
+                         AuditLogEntryRepository auditLogEntryRepository,
                          IdempotencyService idempotencyService, ChargeableSubscriptionPort chargeableSubscriptionPort,
                          DunningRetryCharge dunningRetryCharge, InvoiceCancellationPort invoiceCancellationPort,
-                         OutboxEventRepository outboxEventRepository, PasswordEncoder passwordEncoder, Clock clock) {
-        this.customerRepository = customerRepository;
+                         OutboxEventRepository outboxEventRepository, PaymentMethodOnboardingPort paymentMethodOnboardingPort,
+                         SubscriptionSignupWriter signupWriter, Clock clock) {
         this.planRepository = planRepository;
         this.subscriptionRepository = subscriptionRepository;
         this.planCatalogService = planCatalogService;
         this.auditLogEntryRepository = auditLogEntryRepository;
-        this.tokenIssuer = tokenIssuer;
         this.idempotencyService = idempotencyService;
         this.chargeableSubscriptionPort = chargeableSubscriptionPort;
         this.dunningRetryCharge = dunningRetryCharge;
         this.invoiceCancellationPort = invoiceCancellationPort;
         this.outboxEventRepository = outboxEventRepository;
-        this.passwordEncoder = passwordEncoder;
+        this.paymentMethodOnboardingPort = paymentMethodOnboardingPort;
+        this.signupWriter = signupWriter;
         this.clock = clock;
     }
 
@@ -132,46 +129,33 @@ public class SubscriptionService {
      *         a non-{@code canceled} Subscription
      * @throws PaymentMethodRequiredException    if the target Plan is paid and no
      *         payment method token was supplied
+     *
+     * <p>Deliberately not {@code @Transactional}: a paid signup calls {@link
+     * PaymentMethodOnboardingPort#attach}, which reaches the payment gateway, and this
+     * project's rule against external calls inside a database transaction applies here
+     * exactly as it does to {@link #retryPayment}. Every database write this method causes
+     * happens inside {@link SubscriptionSignupWriter#write}'s own transaction instead,
+     * called only once any required card attachment has already succeeded.
      */
-    @Transactional
     public SubscriptionSignupResult signUp(SignupCommand command) {
         PlanSummary plan = planCatalogService.findAvailablePlan(command.planId())
                 .orElseThrow(() -> new PlanUnavailableForSignupException(command.planId()));
         boolean isFreePlan = plan.currentPrice().signum() == 0;
 
-        Customer customer = resolveCustomer(command);
+        UUID customerId = command.existingCustomerId() != null ? command.existingCustomerId() : UUID.randomUUID();
         if (command.existingCustomerId() != null
-                && subscriptionRepository.existsByCustomerIdAndStateNot(customer.getId(), SubscriptionState.CANCELED)) {
-            throw new DuplicateSubscriptionException(customer.getId());
+                && subscriptionRepository.existsByCustomerIdAndStateNot(customerId, SubscriptionState.CANCELED)) {
+            throw new DuplicateSubscriptionException(customerId);
         }
 
-        Subscription subscription;
-        if (isFreePlan) {
-            subscription = new Subscription(
-                    UUID.randomUUID(), customer, planRepository.getReferenceById(command.planId()),
-                    SubscriptionState.ACTIVE);
-        } else {
+        if (!isFreePlan) {
             if (!StringUtils.hasText(command.paymentMethodToken())) {
                 throw new PaymentMethodRequiredException(command.planId());
             }
-            customer.setPaymentMethodToken(command.paymentMethodToken());
-
-            Instant now = Instant.now(clock);
-            subscription = command.useTrial()
-                    ? Subscription.startTrial(
-                            UUID.randomUUID(), customer, planRepository.getReferenceById(command.planId()), now.plus(TRIAL_DURATION))
-                    : Subscription.startPaidImmediately(
-                            UUID.randomUUID(), customer, planRepository.getReferenceById(command.planId()), now);
+            paymentMethodOnboardingPort.attach(customerId, command.paymentMethodToken());
         }
-        subscriptionRepository.save(subscription);
 
-        auditLogEntryRepository.append(new AuditLogEntry(
-                UUID.randomUUID(), subscription.getId(), ActorType.CUSTOMER, null, subscription.getState().name(),
-                command.correlationId()));
-
-        String accessToken = tokenIssuer.issueFor(customer.getId());
-        return new SubscriptionSignupResult(subscription.getId(), subscription.getState(), plan.id(), accessToken,
-                subscription.getTrialEndsAt(), subscription.getBillingCycleAnchor());
+        return signupWriter.write(command, customerId, plan, isFreePlan);
     }
 
     /**
@@ -589,22 +573,5 @@ public class SubscriptionService {
         return subscriptionRepository.findById(subscriptionId)
                 .filter(candidate -> candidate.getCustomer().getId().equals(authenticatedCustomerId))
                 .orElseThrow(() -> new SubscriptionAccessDeniedException(subscriptionId));
-    }
-
-    private Customer resolveCustomer(SignupCommand command) {
-        if (command.existingCustomerId() != null) {
-            // A bearer token was presented at signup: the identity-bootstrap exception
-            // for a re-subscribing Customer, so this Subscription attaches to
-            // the Customer the token already identifies rather than minting a second
-            // Customer record. A token we issued pointing at no Customer record would be
-            // a system consistency bug, not a client error — left to the generic 500
-            // handler rather than modeled as a client-facing exception.
-            return customerRepository.findById(command.existingCustomerId())
-                    .orElseThrow(() -> new IllegalStateException(
-                            "JWT identified Customer " + command.existingCustomerId() + " has no matching record"));
-        }
-        Customer customer = new Customer(UUID.randomUUID(), command.email());
-        customer.setPasswordHash(passwordEncoder.encode(command.password()));
-        return customerRepository.save(customer);
     }
 }

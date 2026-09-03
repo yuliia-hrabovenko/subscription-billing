@@ -54,12 +54,13 @@ public class ResilientPaymentGatewayClient implements PaymentGatewayClient {
      * both the retry and the breaker.
      *
      * @param paymentMethodToken the Customer's gateway-provided card-on-file reference
+     * @param providerCustomerId the gateway's identity for the Customer this card is attached to
      * @param amount             the amount to charge, in the account's single billing currency
      * @return the delegate's resolved outcome, or {@link ChargeResult.FailedTransiently} if the circuit is open
      */
     @Override
-    public ChargeResult charge(String paymentMethodToken, BigDecimal amount) {
-        Supplier<ChargeResult> withRetry = Retry.decorateSupplier(retry, () -> delegate.charge(paymentMethodToken, amount));
+    public ChargeResult charge(String paymentMethodToken, String providerCustomerId, BigDecimal amount) {
+        Supplier<ChargeResult> withRetry = Retry.decorateSupplier(retry, () -> delegate.charge(paymentMethodToken, providerCustomerId, amount));
         Supplier<ChargeResult> withCircuitBreaker = CircuitBreaker.decorateSupplier(circuitBreaker, withRetry);
         try {
             return withCircuitBreaker.get();

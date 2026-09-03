@@ -3,6 +3,7 @@ package com.subscriptionbilling.api.audit;
 import com.subscriptionbilling.api.subscription.SignupResponse;
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
 import com.subscriptionbilling.api.support.CountingPaymentGatewayClient;
+import com.subscriptionbilling.api.support.FakePaymentMethodStore;
 import com.subscriptionbilling.api.support.PaymentGatewayTestConfig;
 import com.subscriptionbilling.audit.ActorType;
 import com.subscriptionbilling.audit.AuditLogEntry;
@@ -32,23 +33,6 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * The audit-logging spec's user story 10 suite: walks every edge in {@code
- * docs/domain/domain-model.md}'s state diagram once and asserts the {@link AuditLogEntry}
- * postcondition (exactly one new row, correct {@code old_state}/{@code new_state}/{@code
- * actor_type}) for each, rather than trusting that coverage stayed correct as an
- * incidental side effect of every other spec's own spot-checks. This is the authoritative
- * coverage for Invariant 12; other specs' tests may still spot-check audit entries where
- * convenient, but a gap here is what should block "audit logging is complete."
- *
- * <p>Each edge is driven through whichever seam its originating spec's own tests already
- * use — the HTTP API seam (customer-initiated signup/cancel/undo-cancel/retry-payment and
- * gateway-initiated dispute webhooks) or the billing-job runner seam (system-initiated
- * suspension and Dunning exhaustion) — per this spec's Testing Decisions, rather than
- * introducing a new seam of its own. Lives in this module because it is the only one with
- * every port implementation (billing-core, invoicing, dunning, payments, webhooks) wired
- * together at once (see {@code BillingJobRunnerIT}'s Javadoc).
- */
 @SpringBootTest
 @AutoConfigureMockMvc
 class AuditLogEntryStateTransitionCoverageIT extends AbstractPostgresIntegrationTest {
@@ -64,6 +48,9 @@ class AuditLogEntryStateTransitionCoverageIT extends AbstractPostgresIntegration
 
     @Autowired
     private CustomerRepository customerRepository;
+
+    @Autowired
+    private FakePaymentMethodStore fakePaymentMethodStore;
 
     @Autowired
     private SubscriptionRepository subscriptionRepository;
@@ -411,9 +398,7 @@ class AuditLogEntryStateTransitionCoverageIT extends AbstractPostgresIntegration
 
     private void updatePaymentMethodToken(UUID subscriptionId, String paymentMethodToken) {
         Subscription subscription = subscriptionRepository.findById(subscriptionId).orElseThrow();
-        Customer customer = customerRepository.findById(subscription.getCustomer().getId()).orElseThrow();
-        customer.setPaymentMethodToken(paymentMethodToken);
-        customerRepository.saveAndFlush(customer);
+        fakePaymentMethodStore.put(subscription.getCustomer().getId(), paymentMethodToken);
     }
 
     private Subscription seedDueSubscription(Plan plan, Instant billingCycleAnchor, LocalDate billingPeriod,
@@ -441,8 +426,9 @@ class AuditLogEntryStateTransitionCoverageIT extends AbstractPostgresIntegration
 
     private Customer seedCustomer(String paymentMethodToken) {
         Customer customer = new Customer(UUID.randomUUID(), "audit-coverage-it-" + UUID.randomUUID() + "@example.com");
-        customer.setPaymentMethodToken(paymentMethodToken);
-        return customerRepository.saveAndFlush(customer);
+        customer = customerRepository.saveAndFlush(customer);
+        fakePaymentMethodStore.put(customer.getId(), paymentMethodToken);
+        return customer;
     }
 
     private String disputePayload(String eventId, UUID subscriptionId) {

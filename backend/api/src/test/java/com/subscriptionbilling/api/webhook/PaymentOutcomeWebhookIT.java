@@ -2,6 +2,7 @@ package com.subscriptionbilling.api.webhook;
 
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
 import com.subscriptionbilling.api.support.CountingPaymentGatewayClient;
+import com.subscriptionbilling.api.support.FakePaymentMethodStore;
 import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.customer.CustomerRepository;
 import com.subscriptionbilling.billingcore.plan.Plan;
@@ -53,6 +54,9 @@ class PaymentOutcomeWebhookIT extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private CustomerRepository customerRepository;
+
+    @Autowired
+    private FakePaymentMethodStore fakePaymentMethodStore;
 
     @Autowired
     private PlanRepository planRepository;
@@ -188,21 +192,21 @@ class PaymentOutcomeWebhookIT extends AbstractPostgresIntegrationTest {
 
     private String paymentSucceededPayload(String eventId, String gatewayReference, UUID subscriptionId) {
         return """
-                {"id":"%s","type":"charge.succeeded","data":{"object":{"id":"%s","metadata":{"subscription_id":"%s"}}}}
+                {"id":"%s","type":"payment_intent.succeeded","data":{"object":{"id":"%s","metadata":{"subscription_id":"%s"}}}}
                 """.formatted(eventId, gatewayReference, subscriptionId);
     }
 
     private String paymentFailedPayload(String eventId, String gatewayReference, UUID subscriptionId) {
         return """
-                {"id":"%s","type":"charge.failed","data":{"object":{"id":"%s","metadata":{"subscription_id":"%s"}}}}
+                {"id":"%s","type":"payment_intent.payment_failed","data":{"object":{"id":"%s","metadata":{"subscription_id":"%s"}}}}
                 """.formatted(eventId, gatewayReference, subscriptionId);
     }
 
     private Subscription seedDueSubscription(LocalDate billingPeriod, String paymentMethodToken) {
         Plan proPlan = planRepository.findByCode("pro").orElseThrow();
         Customer customer = new Customer(UUID.randomUUID(), "payment-outcome-it-" + UUID.randomUUID() + "@example.com");
-        customer.setPaymentMethodToken(paymentMethodToken);
         customerRepository.saveAndFlush(customer);
+        fakePaymentMethodStore.put(customer.getId(), paymentMethodToken);
         Subscription subscription = Subscription.startPaidImmediately(UUID.randomUUID(), customer, proPlan, Instant.now());
         subscription.advanceDueDate(billingPeriod);
         return subscriptionRepository.saveAndFlush(subscription);

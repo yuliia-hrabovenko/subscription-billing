@@ -109,7 +109,7 @@ class BillingJobRunnerTest {
         UUID dueSubscriptionId = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(dueSubscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(dueSubscriptionId)).thenReturn(chargeable(dueSubscriptionId));
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
 
         List<UUID> selected = runner().run();
 
@@ -130,11 +130,11 @@ class BillingJobRunnerTest {
         UUID subscriptionId = UUID.randomUUID();
         // Jan-31 anchored, currently billing for Jan 31 -- must clamp into Feb 28.
         ChargeableSubscription chargeable = new ChargeableSubscription(
-                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(),
+                subscriptionId, "tok_visa", "cus_visa", new BigDecimal("19.00"), UUID.randomUUID(),
                 LocalDate.of(2026, 1, 31), 31);
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
-        when(paymentGatewayClient.charge("tok_visa", new BigDecimal("19.00")))
+        when(paymentGatewayClient.charge("tok_visa", "cus_visa", new BigDecimal("19.00")))
                 .thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
         runner().run();
@@ -153,11 +153,11 @@ class BillingJobRunnerTest {
         // The next due date must land on Sep 21 -- derived from the missed due date, not
         // from TODAY, which would otherwise drift the Customer's billing day.
         ChargeableSubscription chargeable = new ChargeableSubscription(
-                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(),
+                subscriptionId, "tok_visa", "cus_visa", new BigDecimal("19.00"), UUID.randomUUID(),
                 LocalDate.of(2026, 8, 21), 21);
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
-        when(paymentGatewayClient.charge("tok_visa", new BigDecimal("19.00")))
+        when(paymentGatewayClient.charge("tok_visa", "cus_visa", new BigDecimal("19.00")))
                 .thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
         runner().run();
@@ -171,7 +171,7 @@ class BillingJobRunnerTest {
         UUID subscriptionId = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
         runner().run();
 
@@ -194,7 +194,7 @@ class BillingJobRunnerTest {
         ChargeableSubscription chargeable = chargeable(subscriptionId);
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), null, FIXED_CLOCK.instant())).thenReturn(invoiceId);
 
@@ -215,7 +215,7 @@ class BillingJobRunnerTest {
         UUID subscriptionId = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.FailedTransiently("gateway_timeout"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.FailedTransiently("gateway_timeout"));
 
         runner().run();
 
@@ -231,7 +231,7 @@ class BillingJobRunnerTest {
         UUID subscriptionId = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(any(), any(), any(), any(), any())).thenReturn(UUID.randomUUID());
         org.mockito.Mockito.doThrow(new IllegalStateException("dunning unavailable"))
                 .when(dunningHandoff).onChargeFailed(any(), any(), any(), any(), any());
@@ -247,19 +247,19 @@ class BillingJobRunnerTest {
         UUID first = UUID.randomUUID();
         UUID second = UUID.randomUUID();
         ChargeableSubscription firstChargeable = new ChargeableSubscription(
-                first, "tok_first", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 24), 24);
+                first, "tok_first", "cus_first", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 24), 24);
         ChargeableSubscription secondChargeable = new ChargeableSubscription(
-                second, "tok_second", new BigDecimal("49.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 24), 24);
+                second, "tok_second", "cus_second", new BigDecimal("49.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 24), 24);
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(first, second));
         when(chargeableSubscriptionPort.loadForCharge(first)).thenReturn(firstChargeable);
         when(chargeableSubscriptionPort.loadForCharge(second)).thenReturn(secondChargeable);
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn"));
 
         runner().run();
 
         ArgumentCaptor<String> tokens = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<BigDecimal> amounts = ArgumentCaptor.forClass(BigDecimal.class);
-        verify(paymentGatewayClient, org.mockito.Mockito.times(2)).charge(tokens.capture(), amounts.capture());
+        verify(paymentGatewayClient, org.mockito.Mockito.times(2)).charge(tokens.capture(), any(), amounts.capture());
         assertThat(tokens.getAllValues()).containsExactlyInAnyOrder("tok_first", "tok_second");
         assertThat(amounts.getAllValues()).containsExactlyInAnyOrder(new BigDecimal("19.00"), new BigDecimal("49.00"));
     }
@@ -271,7 +271,7 @@ class BillingJobRunnerTest {
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(failing, healthy));
         when(chargeableSubscriptionPort.loadForCharge(failing)).thenThrow(new IllegalStateException("boom"));
         when(chargeableSubscriptionPort.loadForCharge(healthy)).thenReturn(chargeable(healthy));
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn"));
 
         List<UUID> selected = runner().run();
 
@@ -291,7 +291,7 @@ class BillingJobRunnerTest {
 
         runner().run();
 
-        verify(paymentGatewayClient, never()).charge(any(), any());
+        verify(paymentGatewayClient, never()).charge(any(), any(), any());
         verify(billingCycleAdvancePort, never()).advanceDueDate(any(), any(), any(), any());
         verify(dunningHandoff, never()).onChargeFailed(any(), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
@@ -306,13 +306,13 @@ class BillingJobRunnerTest {
         // Not yet recorded on the first run; recorded (by this very run) by the second.
         when(chargeRecordingPort.invoiceAlreadyRecorded(subscriptionId, chargeable.billingPeriod()))
                 .thenReturn(false, true);
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
         BillingJobRunner runner = runner();
         runner.run();
         runner.run();
 
-        verify(paymentGatewayClient, org.mockito.Mockito.times(1)).charge(any(), any());
+        verify(paymentGatewayClient, org.mockito.Mockito.times(1)).charge(any(), any(), any());
         verify(chargeRecordingPort, org.mockito.Mockito.times(1))
                 .recordSuccessfulCharge(any(), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_duplicate_charge_skipped_total").counter().count()).isEqualTo(1.0);
@@ -323,7 +323,7 @@ class BillingJobRunnerTest {
         UUID subscriptionId = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
         org.mockito.Mockito.doThrow(new ChargeAlreadyRecordedException("already recorded", new RuntimeException()))
                 .when(chargeRecordingPort).recordSuccessfulCharge(any(), any(), any(), any(), any());
 
@@ -340,7 +340,7 @@ class BillingJobRunnerTest {
         UUID subscriptionId = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         org.mockito.Mockito.doThrow(new ChargeAlreadyRecordedException("already recorded", new RuntimeException()))
                 .when(chargeRecordingPort).recordFailedCharge(any(), any(), any(), any(), any());
 
@@ -362,7 +362,7 @@ class BillingJobRunnerTest {
         runner().run();
 
         verify(chargeableSubscriptionPort, never()).loadForCharge(any());
-        verify(paymentGatewayClient, never()).charge(any(), any());
+        verify(paymentGatewayClient, never()).charge(any(), any(), any());
         verify(chargeRecordingPort, never()).recordSuccessfulCharge(any(), any(), any(), any(), any());
         verify(chargeRecordingPort, never()).recordFailedCharge(any(), any(), any(), any(), any());
         assertThat(meterRegistry.get("billing_job_subscriptions_processed_total").counter().count()).isEqualTo(0.0);
@@ -375,7 +375,7 @@ class BillingJobRunnerTest {
         when(pendingPlanChangePort.applyIfPending(eq(subscriptionId), any(String.class)))
                 .thenReturn(PendingPlanChangeOutcome.APPLIED_PAID);
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
         runner().run();
 
@@ -390,7 +390,7 @@ class BillingJobRunnerTest {
         when(pendingPlanChangePort.applyIfPending(eq(subscriptionId), any(String.class)))
                 .thenReturn(PendingPlanChangeOutcome.NO_PENDING_CHANGE);
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable(subscriptionId));
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
         runner().run();
 
@@ -403,7 +403,7 @@ class BillingJobRunnerTest {
         ChargeableSubscription retryChargeable = dunningRetryChargeable(subscriptionId);
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(retryChargeable);
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
         runner().run();
 
@@ -423,7 +423,7 @@ class BillingJobRunnerTest {
         DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 1, false);
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(retryChargeable);
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, retryChargeable.billingPeriod(),
                 retryChargeable.priceVersionId(), null, FIXED_CLOCK.instant())).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
@@ -450,7 +450,7 @@ class BillingJobRunnerTest {
         DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 3, true);
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(retryChargeable);
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, retryChargeable.billingPeriod(),
                 retryChargeable.priceVersionId(), null, FIXED_CLOCK.instant())).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
@@ -473,12 +473,12 @@ class BillingJobRunnerTest {
         ChargeableSubscription retryChargeable = dunningRetryChargeable(subscriptionId);
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(subscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(retryChargeable);
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
         runner().run();
 
         verify(chargeRecordingPort, never()).invoiceAlreadyRecorded(any(), any());
-        verify(paymentGatewayClient).charge(any(), any());
+        verify(paymentGatewayClient).charge(any(), any(), any());
     }
 
     @Test
@@ -488,15 +488,15 @@ class BillingJobRunnerTest {
         // Distinct payment method tokens -- not just distinct Subscription ids -- so each
         // Subscription's gateway.charge() stub only matches its own invocation.
         ChargeableSubscription suspendingChargeable = new ChargeableSubscription(
-                suspending, "tok_suspend", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24);
+                suspending, "tok_suspend", "cus_suspend", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24);
         ChargeableSubscription recoveringChargeable = new ChargeableSubscription(
-                recovering, "tok_recover", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24, true);
+                recovering, "tok_recover", "cus_recover", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24, true);
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(suspending, recovering));
         when(chargeableSubscriptionPort.loadForCharge(suspending)).thenReturn(suspendingChargeable);
         when(chargeableSubscriptionPort.loadForCharge(recovering)).thenReturn(recoveringChargeable);
-        when(paymentGatewayClient.charge(suspendingChargeable.paymentMethodToken(), suspendingChargeable.amount()))
+        when(paymentGatewayClient.charge(suspendingChargeable.paymentMethodToken(), suspendingChargeable.providerCustomerId(), suspendingChargeable.amount()))
                 .thenReturn(new ChargeResult.Declined("card_declined"));
-        when(paymentGatewayClient.charge(recoveringChargeable.paymentMethodToken(), recoveringChargeable.amount()))
+        when(paymentGatewayClient.charge(recoveringChargeable.paymentMethodToken(), recoveringChargeable.providerCustomerId(), recoveringChargeable.amount()))
                 .thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
         runner().run();
@@ -516,7 +516,7 @@ class BillingJobRunnerTest {
         UUID secondRunSubscription = UUID.randomUUID();
         when(chargeableSubscriptionPort.loadForCharge(firstRunSubscription)).thenReturn(chargeable(firstRunSubscription));
         when(chargeableSubscriptionPort.loadForCharge(secondRunSubscription)).thenReturn(chargeable(secondRunSubscription));
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
 
         BillingJobRunner runner = runner();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(firstRunSubscription));
@@ -573,7 +573,7 @@ class BillingJobRunnerTest {
         UUID healthyCandidate = UUID.randomUUID();
         when(dueSubscriptionsPort.findDueSubscriptionIds(TODAY)).thenReturn(List.of(dueSubscriptionId));
         when(chargeableSubscriptionPort.loadForCharge(dueSubscriptionId)).thenReturn(chargeable(dueSubscriptionId));
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(trialEndingSoonPort.findTrialsEndingSoon(any())).thenReturn(List.of(failingCandidate, healthyCandidate));
         org.mockito.Mockito.doThrow(new IllegalStateException("boom"))
                 .when(trialEndingSoonPort).notifyTrialEndingSoon(eq(failingCandidate), any());
@@ -599,11 +599,11 @@ class BillingJobRunnerTest {
 
     private ChargeableSubscription chargeable(UUID subscriptionId) {
         return new ChargeableSubscription(
-                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24);
+                subscriptionId, "tok_visa", "cus_visa", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24);
     }
 
     private ChargeableSubscription dunningRetryChargeable(UUID subscriptionId) {
         return new ChargeableSubscription(
-                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24, true);
+                subscriptionId, "tok_visa", "cus_visa", new BigDecimal("19.00"), UUID.randomUUID(), TODAY, 24, true);
     }
 }

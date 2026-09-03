@@ -100,6 +100,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/payment-methods/setup-intent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createSetupIntent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/customers/login": {
         parameters: {
             query?: never;
@@ -388,6 +404,9 @@ export interface components {
             /** Format: uuid */
             planId: string;
         };
+        SetupIntentResponse: {
+            clientSecret?: string;
+        };
         CustomerLoginRequest: {
             email: string;
             password: string;
@@ -657,6 +676,26 @@ export interface operations {
                 };
                 content: {
                     "*/*": components["schemas"]["SubscriptionResponse"];
+                };
+            };
+        };
+    };
+    createSetupIntent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": components["schemas"]["SetupIntentResponse"];
                 };
             };
         };

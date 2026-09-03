@@ -59,7 +59,7 @@ public class DunningRetryCharge {
      */
     public DunningRetryChargeResult attempt(UUID subscriptionId, ChargeableSubscription chargeable, Instant attemptedAt,
                                              String correlationId, ChargeTrigger trigger) {
-        ChargeResult result = paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.amount());
+        ChargeResult result = paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.providerCustomerId(), chargeable.amount());
         return switch (result) {
             case ChargeResult.Succeeded succeeded -> {
                 chargeOutcomeApplier.applySuccess(subscriptionId, chargeable, succeeded.gatewayTransactionId(),

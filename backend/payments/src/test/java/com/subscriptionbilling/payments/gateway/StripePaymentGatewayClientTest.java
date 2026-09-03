@@ -27,6 +27,7 @@ import java.util.HexFormat;
 import static com.github.tomakehurst.wiremock.client.WireMock.containing;
 import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
+import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,15 +49,23 @@ class StripePaymentGatewayClientTest {
 
     @Test
     void chargeSucceedsReturningStripesChargeIdAsTheGatewayTransactionId() {
-        ChargeResult result = client.charge(StripeGatewayStub.SUCCESS_TOKEN, new BigDecimal("19.99"));
+        ChargeResult result = client.charge(StripeGatewayStub.SUCCESS_TOKEN, StripeGatewayStub.CUSTOMER_ID, new BigDecimal("19.99"));
 
         assertThat(result).isInstanceOf(ChargeResult.Succeeded.class);
         assertThat(((ChargeResult.Succeeded) result).gatewayTransactionId()).isEqualTo("ch_3PstripeSuccess001");
     }
 
     @Test
+    void chargeSendsTheProviderCustomerIdStripeRequiresForAnAlreadyAttachedPaymentMethod() {
+        client.charge(StripeGatewayStub.SUCCESS_TOKEN, StripeGatewayStub.CUSTOMER_ID, new BigDecimal("19.99"));
+
+        wireMock.verify(postRequestedFor(urlPathEqualTo(StripeGatewayStub.PAYMENT_INTENTS_PATH))
+                .withRequestBody(containing("customer=" + StripeGatewayStub.CUSTOMER_ID)));
+    }
+
+    @Test
     void chargeIsDeclinedDistinguishablyFromAnInfraFailureOnTheDeclineStub() {
-        ChargeResult result = client.charge(StripeGatewayStub.DECLINED_TOKEN, new BigDecimal("19.99"));
+        ChargeResult result = client.charge(StripeGatewayStub.DECLINED_TOKEN, StripeGatewayStub.CUSTOMER_ID, new BigDecimal("19.99"));
 
         assertThat(result).isInstanceOf(ChargeResult.Declined.class);
         assertThat(((ChargeResult.Declined) result).reason()).isEqualTo("card_declined");
@@ -64,7 +73,7 @@ class StripePaymentGatewayClientTest {
 
     @Test
     void chargeFailsTransientlyRatherThanHangingOrDecliningOnTheTimeoutStub() {
-        ChargeResult result = client.charge(StripeGatewayStub.TIMEOUT_TOKEN, new BigDecimal("19.99"));
+        ChargeResult result = client.charge(StripeGatewayStub.TIMEOUT_TOKEN, StripeGatewayStub.CUSTOMER_ID, new BigDecimal("19.99"));
 
         assertThat(result).isInstanceOf(ChargeResult.FailedTransiently.class);
     }
@@ -111,16 +120,15 @@ class StripePaymentGatewayClientTest {
 
     @Test
     void chargeNeverLogsAPanShapedStringEvenIfTheGatewayResponseContainsOne() {
-        String token = "tok_response_contains_a_leaked_pan";
-        wireMock.stubFor(post(urlPathEqualTo(StripeGatewayStub.CHARGES_PATH))
-                .withRequestBody(containing("source=" + token))
+        String token = "pm_response_contains_a_leaked_pan";
+        wireMock.stubFor(post(urlPathEqualTo(StripeGatewayStub.PAYMENT_INTENTS_PATH))
+                .withRequestBody(containing("payment_method=" + token))
                 .willReturn(okJson("""
                         {
                           "id": "ch_leakTest001",
-                          "object": "charge",
-                          "paid": true,
+                          "object": "payment_intent",
                           "status": "succeeded",
-                          "source": { "number": "4242424242424242", "last4": "4242" }
+                          "payment_method": { "number": "4242424242424242", "last4": "4242" }
                         }
                         """)));
 
@@ -129,7 +137,7 @@ class StripePaymentGatewayClientTest {
         appender.start();
         logger.addAppender(appender);
         try {
-            client.charge(token, new BigDecimal("19.99"));
+            client.charge(token, StripeGatewayStub.CUSTOMER_ID, new BigDecimal("19.99"));
         } finally {
             logger.detachAppender(appender);
         }

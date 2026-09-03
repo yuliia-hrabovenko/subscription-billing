@@ -73,7 +73,7 @@ class WebhooksAutoConfigurationTest {
     }
 
     private GatewayWebhookEvent paymentSucceededEvent(UUID subscriptionId) {
-        return readEvent("evt_payment", "charge.succeeded",
+        return readEvent("evt_payment", "payment_intent.succeeded",
                 "{\"object\":{\"id\":\"ch_1\",\"metadata\":{\"subscription_id\":\"" + subscriptionId + "\"}}}");
     }
 

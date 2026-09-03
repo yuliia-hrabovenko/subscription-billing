@@ -9,8 +9,11 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * The individual who owns at most one non-{@code canceled} Subscription at a time.
- * {@code paymentMethodToken} is a gateway-provided reference, never a raw card number.
+ * The individual who owns at most one non-{@code canceled} Subscription at a time. Their
+ * card on file is not carried here -- see ADR-0011: it lives in the {@code payments}
+ * module's {@code payment_method} table, resolved via {@link
+ * com.subscriptionbilling.billingjob.paymentmethod.CustomerPaymentMethodPort} rather than
+ * a field on this entity.
  */
 @Entity
 @Table(name = "customer")
@@ -21,9 +24,6 @@ public class Customer {
 
     @Column(nullable = false, unique = true)
     private String email;
-
-    @Column(name = "payment_method_token")
-    private String paymentMethodToken;
 
     @Column(name = "password_hash")
     private String passwordHash;
@@ -46,14 +46,6 @@ public class Customer {
 
     public String getEmail() {
         return email;
-    }
-
-    public String getPaymentMethodToken() {
-        return paymentMethodToken;
-    }
-
-    public void setPaymentMethodToken(String paymentMethodToken) {
-        this.paymentMethodToken = paymentMethodToken;
     }
 
     public String getPasswordHash() {

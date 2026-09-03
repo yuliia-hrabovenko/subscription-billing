@@ -34,28 +34,27 @@ class ResilientPaymentGatewayClientTest {
 
     @Test
     void aSingleTimeoutIsRetriedAndReturnsSuccessWhenTheRetrySucceeds() {
-        String token = "tok_timeout_then_success";
-        wireMock.stubFor(post(urlPathEqualTo(StripeGatewayStub.CHARGES_PATH))
-                .withRequestBody(containing("source=" + token))
+        String token = "pm_timeout_then_success";
+        wireMock.stubFor(post(urlPathEqualTo(StripeGatewayStub.PAYMENT_INTENTS_PATH))
+                .withRequestBody(containing("payment_method=" + token))
                 .inScenario("retry-then-success")
                 .whenScenarioStateIs(Scenario.STARTED)
                 .willSetStateTo("retried")
                 .willReturn(aResponse().withFixedDelay((int) StripeGatewayStub.TIMEOUT_DELAY_MILLIS)));
-        wireMock.stubFor(post(urlPathEqualTo(StripeGatewayStub.CHARGES_PATH))
-                .withRequestBody(containing("source=" + token))
+        wireMock.stubFor(post(urlPathEqualTo(StripeGatewayStub.PAYMENT_INTENTS_PATH))
+                .withRequestBody(containing("payment_method=" + token))
                 .inScenario("retry-then-success")
                 .whenScenarioStateIs("retried")
                 .willReturn(okJson("""
                         {
                           "id": "ch_retrySucceeded001",
-                          "object": "charge",
-                          "paid": true,
+                          "object": "payment_intent",
                           "status": "succeeded"
                         }
                         """)));
         ResilientPaymentGatewayClient client = clientWith(testResilienceProperties());
 
-        ChargeResult result = client.charge(token, AMOUNT);
+        ChargeResult result = client.charge(token, StripeGatewayStub.CUSTOMER_ID, AMOUNT);
 
         assertThat(result).isInstanceOf(ChargeResult.Succeeded.class);
         assertThat(((ChargeResult.Succeeded) result).gatewayTransactionId()).isEqualTo("ch_retrySucceeded001");
@@ -70,8 +69,8 @@ class ResilientPaymentGatewayClientTest {
         ResilientPaymentGatewayClient client = clientWith(resilience);
         assertThat(client.getCircuitBreakerState()).isEqualTo(CircuitBreaker.State.CLOSED);
 
-        client.charge(StripeGatewayStub.TIMEOUT_TOKEN, AMOUNT);
-        client.charge(StripeGatewayStub.TIMEOUT_TOKEN, AMOUNT);
+        client.charge(StripeGatewayStub.TIMEOUT_TOKEN, StripeGatewayStub.CUSTOMER_ID, AMOUNT);
+        client.charge(StripeGatewayStub.TIMEOUT_TOKEN, StripeGatewayStub.CUSTOMER_ID, AMOUNT);
 
         assertThat(client.getCircuitBreakerState()).isEqualTo(CircuitBreaker.State.OPEN);
     }
@@ -80,18 +79,18 @@ class ResilientPaymentGatewayClientTest {
     void aDeclinedChargeIsNeverRetried() {
         ResilientPaymentGatewayClient client = clientWith(testResilienceProperties());
 
-        ChargeResult result = client.charge(StripeGatewayStub.DECLINED_TOKEN, AMOUNT);
+        ChargeResult result = client.charge(StripeGatewayStub.DECLINED_TOKEN, StripeGatewayStub.CUSTOMER_ID, AMOUNT);
 
         assertThat(result).isInstanceOf(ChargeResult.Declined.class);
-        wireMock.verify(1, postRequestedFor(urlPathEqualTo(StripeGatewayStub.CHARGES_PATH))
-                .withRequestBody(containing("source=" + StripeGatewayStub.DECLINED_TOKEN)));
+        wireMock.verify(1, postRequestedFor(urlPathEqualTo(StripeGatewayStub.PAYMENT_INTENTS_PATH))
+                .withRequestBody(containing("payment_method=" + StripeGatewayStub.DECLINED_TOKEN)));
     }
 
     @Test
     void aSuccessfulChargePassesThroughWithoutTrippingTheBreaker() {
         ResilientPaymentGatewayClient client = clientWith(testResilienceProperties());
 
-        ChargeResult result = client.charge(StripeGatewayStub.SUCCESS_TOKEN, AMOUNT);
+        ChargeResult result = client.charge(StripeGatewayStub.SUCCESS_TOKEN, StripeGatewayStub.CUSTOMER_ID, AMOUNT);
 
         assertThat(result).isInstanceOf(ChargeResult.Succeeded.class);
         assertThat(client.getCircuitBreakerState()).isEqualTo(CircuitBreaker.State.CLOSED);

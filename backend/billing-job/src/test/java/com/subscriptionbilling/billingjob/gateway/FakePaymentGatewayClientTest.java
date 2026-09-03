@@ -12,7 +12,7 @@ class FakePaymentGatewayClientTest {
 
     @Test
     void succeedsForAnOrdinaryTokenWithAGatewayTransactionId() {
-        ChargeResult result = client.charge("tok_visa", BigDecimal.TEN);
+        ChargeResult result = client.charge("tok_visa", "cus_test", BigDecimal.TEN);
 
         assertThat(result).isInstanceOf(ChargeResult.Succeeded.class);
         assertThat(((ChargeResult.Succeeded) result).gatewayTransactionId()).isNotBlank();
@@ -20,7 +20,7 @@ class FakePaymentGatewayClientTest {
 
     @Test
     void declinesWithAReasonForTheDeclineToken() {
-        ChargeResult result = client.charge(FakePaymentGatewayClient.DECLINE_TOKEN, BigDecimal.TEN);
+        ChargeResult result = client.charge(FakePaymentGatewayClient.DECLINE_TOKEN, "cus_test", BigDecimal.TEN);
 
         assertThat(result).isInstanceOf(ChargeResult.Declined.class);
         assertThat(((ChargeResult.Declined) result).reason()).isNotBlank();
@@ -28,7 +28,7 @@ class FakePaymentGatewayClientTest {
 
     @Test
     void failsTransientlyWithAReasonForTheTransientFailureToken() {
-        ChargeResult result = client.charge(FakePaymentGatewayClient.TRANSIENT_FAILURE_TOKEN, BigDecimal.TEN);
+        ChargeResult result = client.charge(FakePaymentGatewayClient.TRANSIENT_FAILURE_TOKEN, "cus_test", BigDecimal.TEN);
 
         assertThat(result).isInstanceOf(ChargeResult.FailedTransiently.class);
         assertThat(((ChargeResult.FailedTransiently) result).reason()).isNotBlank();

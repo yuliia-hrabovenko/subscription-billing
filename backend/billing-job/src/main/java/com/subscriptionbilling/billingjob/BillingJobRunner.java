@@ -247,7 +247,7 @@ public class BillingJobRunner {
                 handleDunningRetryCharge(subscriptionId, chargeable, attemptedAt, correlationId);
                 return;
             }
-            ChargeResult result = paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.amount());
+            ChargeResult result = paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.providerCustomerId(), chargeable.amount());
             switch (result) {
                 case ChargeResult.Succeeded succeeded ->
                         handleSuccess(subscriptionId, chargeable, succeeded, attemptedAt, correlationId);

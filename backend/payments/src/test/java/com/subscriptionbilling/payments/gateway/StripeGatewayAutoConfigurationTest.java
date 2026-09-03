@@ -42,7 +42,7 @@ class StripeGatewayAutoConfigurationTest {
         PaymentGatewayClient paymentGatewayClient() {
             return new PaymentGatewayClient() {
                 @Override
-                public ChargeResult charge(String paymentMethodToken, BigDecimal amount) {
+                public ChargeResult charge(String paymentMethodToken, String providerCustomerId, BigDecimal amount) {
                     return new ChargeResult.Succeeded("fake-txn");
                 }
 

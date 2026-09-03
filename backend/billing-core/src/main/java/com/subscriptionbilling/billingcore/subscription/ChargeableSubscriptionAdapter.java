@@ -4,6 +4,8 @@ import com.subscriptionbilling.billingcore.plan.PriceVersion;
 import com.subscriptionbilling.billingcore.plan.PriceVersionRepository;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscriptionPort;
+import com.subscriptionbilling.billingjob.paymentmethod.CustomerPaymentMethodPort;
+import com.subscriptionbilling.billingjob.paymentmethod.ProviderPaymentMethodReference;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,7 +22,7 @@ import java.util.UUID;
  * charged, and the Anchor Date day-of-month a successful charge's next cycle clamps
  * against. For an already-paid Subscription (a renewal) that's the fixed day {@link
  * Subscription#getBillingCycleAnchor()} already carries; for a {@code trialing}
- * Subscription converting today (no Billing Cycle opened yet — Invariant 5), it's
+ * Subscription converting today (no Billing Cycle opened yet), it's
  * today's day-of-month, the Anchor Date about to be established by this same charge.
  *
  * <p>A {@code suspended} Subscription is a due Dunning retry, not a fresh renewal: its
@@ -36,18 +38,22 @@ public class ChargeableSubscriptionAdapter implements ChargeableSubscriptionPort
 
     private final SubscriptionRepository subscriptionRepository;
     private final PriceVersionRepository priceVersionRepository;
+    private final CustomerPaymentMethodPort customerPaymentMethodPort;
     private final Clock clock;
 
     @Autowired
     public ChargeableSubscriptionAdapter(SubscriptionRepository subscriptionRepository,
-                                          PriceVersionRepository priceVersionRepository) {
-        this(subscriptionRepository, priceVersionRepository, Clock.systemUTC());
+                                          PriceVersionRepository priceVersionRepository,
+                                          CustomerPaymentMethodPort customerPaymentMethodPort) {
+        this(subscriptionRepository, priceVersionRepository, customerPaymentMethodPort, Clock.systemUTC());
     }
 
     ChargeableSubscriptionAdapter(SubscriptionRepository subscriptionRepository,
-                                   PriceVersionRepository priceVersionRepository, Clock clock) {
+                                   PriceVersionRepository priceVersionRepository,
+                                   CustomerPaymentMethodPort customerPaymentMethodPort, Clock clock) {
         this.subscriptionRepository = subscriptionRepository;
         this.priceVersionRepository = priceVersionRepository;
+        this.customerPaymentMethodPort = customerPaymentMethodPort;
         this.clock = clock;
     }
 
@@ -70,9 +76,14 @@ public class ChargeableSubscriptionAdapter implements ChargeableSubscriptionPort
                 ? subscription.getBillingCycleAnchor().atZone(ZoneOffset.UTC).getDayOfMonth()
                 : LocalDate.now(clock).getDayOfMonth();
 
+        UUID customerId = subscription.getCustomer().getId();
+        ProviderPaymentMethodReference providerReference = customerPaymentMethodPort.findActiveProviderReference(customerId)
+                .orElseThrow(() -> new IllegalStateException("Customer " + customerId + " has no payment method on file"));
+
         return new ChargeableSubscription(
                 subscription.getId(),
-                subscription.getCustomer().getPaymentMethodToken(),
+                providerReference.providerPaymentMethodId(),
+                providerReference.providerCustomerId(),
                 effectivePrice.getAmount(),
                 effectivePrice.getId(),
                 billingPeriod,

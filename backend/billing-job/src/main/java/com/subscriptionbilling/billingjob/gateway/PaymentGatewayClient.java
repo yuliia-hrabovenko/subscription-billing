@@ -20,10 +20,13 @@ public interface PaymentGatewayClient {
      * Charges the given amount against the given card-on-file reference.
      *
      * @param paymentMethodToken the Customer's gateway-provided card-on-file reference
+     * @param providerCustomerId the gateway's identity for the Customer this card is
+     *                           attached to -- required alongside {@code paymentMethodToken}
+     *                           to confirm the charge
      * @param amount             the amount to charge, in the account's single billing currency
      * @return the resolved outcome: success, decline, or transient failure
      */
-    ChargeResult charge(String paymentMethodToken, BigDecimal amount);
+    ChargeResult charge(String paymentMethodToken, String providerCustomerId, BigDecimal amount);
 
     /**
      * Verifies that a webhook request actually originated from the gateway, using the

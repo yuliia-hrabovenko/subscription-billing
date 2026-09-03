@@ -28,7 +28,6 @@ class ReceiptRendererTest {
         String text;
         try (PDDocument document = Loader.loadPDF(pdf)) {
             text = new PDFTextStripper().getText(document);
-            Files.write(Paths.get("test.pdf"), pdf);
         }
         assertThat(text).contains("Enterprise");
         assertThat(text).contains("49.00");

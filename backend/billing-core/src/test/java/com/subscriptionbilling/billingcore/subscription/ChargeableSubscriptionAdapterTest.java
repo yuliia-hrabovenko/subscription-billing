@@ -5,6 +5,8 @@ import com.subscriptionbilling.billingcore.plan.Plan;
 import com.subscriptionbilling.billingcore.plan.PriceVersion;
 import com.subscriptionbilling.billingcore.plan.PriceVersionRepository;
 import com.subscriptionbilling.billingjob.charge.ChargeableSubscription;
+import com.subscriptionbilling.billingjob.paymentmethod.CustomerPaymentMethodPort;
+import com.subscriptionbilling.billingjob.paymentmethod.ProviderPaymentMethodReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -22,14 +24,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 
-/**
- * Unit coverage of {@link ChargeableSubscriptionAdapter}: it assembles a {@link
- * ChargeableSubscription} from the persisted Subscription's Customer/Plan and the
- * PriceVersion in effect for that Plan on the Billing Cycle date being charged (not
- * "now" — a several-days-overdue catch-up charge must still bill at the price in effect
- * on its own billing period). Whether the underlying repository queries are correct
- * against real data is each repository's own contract.
- */
 @ExtendWith(MockitoExtension.class)
 class ChargeableSubscriptionAdapterTest {
 
@@ -39,12 +33,14 @@ class ChargeableSubscriptionAdapterTest {
     @Mock
     private PriceVersionRepository priceVersionRepository;
 
+    @Mock
+    private CustomerPaymentMethodPort customerPaymentMethodPort;
+
     private final Customer customer = new Customer(UUID.randomUUID(), "charge-me@example.com");
     private final Plan plan = new Plan(UUID.randomUUID(), "pro", "Pro");
 
     @Test
     void assemblesThePaymentTokenBillingPeriodPriceAndAnchorDayFromThePersistedSubscription() {
-        customer.setPaymentMethodToken("tok_visa");
         // Jan-31 anchored -- the fixed day-of-month a later cycle's clamping derives from.
         Instant anchor = Instant.parse("2026-01-31T00:00:00Z");
         LocalDate dueDate = LocalDate.of(2026, 7, 31);
@@ -55,12 +51,16 @@ class ChargeableSubscriptionAdapterTest {
         when(subscriptionRepository.findById(subscription.getId())).thenReturn(Optional.of(subscription));
         when(priceVersionRepository.findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
                 plan.getId(), dueDate.atStartOfDay(ZoneOffset.UTC).toInstant())).thenReturn(Optional.of(priceVersion));
+        when(customerPaymentMethodPort.findActiveProviderReference(customer.getId()))
+                .thenReturn(Optional.of(new ProviderPaymentMethodReference("cus_visa", "pm_visa")));
 
-        ChargeableSubscription result = new ChargeableSubscriptionAdapter(subscriptionRepository, priceVersionRepository)
+        ChargeableSubscription result = new ChargeableSubscriptionAdapter(
+                subscriptionRepository, priceVersionRepository, customerPaymentMethodPort)
                 .loadForCharge(subscription.getId());
 
         assertThat(result.subscriptionId()).isEqualTo(subscription.getId());
-        assertThat(result.paymentMethodToken()).isEqualTo("tok_visa");
+        assertThat(result.paymentMethodToken()).isEqualTo("pm_visa");
+        assertThat(result.providerCustomerId()).isEqualTo("cus_visa");
         assertThat(result.amount()).isEqualByComparingTo("19.00");
         assertThat(result.priceVersionId()).isEqualTo(priceVersion.getId());
         assertThat(result.billingPeriod()).isEqualTo(dueDate);
@@ -82,8 +82,11 @@ class ChargeableSubscriptionAdapterTest {
         when(priceVersionRepository.findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
                 plan.getId(), overdueBillingPeriod.atStartOfDay(ZoneOffset.UTC).toInstant()))
                 .thenReturn(Optional.of(priceInEffectOnTheBillingPeriod));
+        when(customerPaymentMethodPort.findActiveProviderReference(customer.getId()))
+                .thenReturn(Optional.of(new ProviderPaymentMethodReference("cus_visa", "pm_visa")));
 
-        ChargeableSubscription result = new ChargeableSubscriptionAdapter(subscriptionRepository, priceVersionRepository)
+        ChargeableSubscription result = new ChargeableSubscriptionAdapter(
+                subscriptionRepository, priceVersionRepository, customerPaymentMethodPort)
                 .loadForCharge(subscription.getId());
 
         assertThat(result.priceVersionId()).isEqualTo(priceInEffectOnTheBillingPeriod.getId());
@@ -94,7 +97,6 @@ class ChargeableSubscriptionAdapterTest {
         // A trialing Subscription has no Billing Cycle yet (Invariant 5) -- there is no
         // existing anchor to derive a day-of-month from, so it must come from today,
         // the day this same charge is about to open the first Billing Cycle on.
-        customer.setPaymentMethodToken("tok_visa");
         LocalDate trialEndDate = LocalDate.of(2026, 8, 20);
         Subscription subscription = Subscription.startTrial(UUID.randomUUID(), customer, plan, Instant.now());
         subscription.advanceDueDate(trialEndDate);
@@ -103,9 +105,12 @@ class ChargeableSubscriptionAdapterTest {
         when(subscriptionRepository.findById(subscription.getId())).thenReturn(Optional.of(subscription));
         when(priceVersionRepository.findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
                 plan.getId(), trialEndDate.atStartOfDay(ZoneOffset.UTC).toInstant())).thenReturn(Optional.of(priceVersion));
+        when(customerPaymentMethodPort.findActiveProviderReference(customer.getId()))
+                .thenReturn(Optional.of(new ProviderPaymentMethodReference("cus_visa", "pm_visa")));
         Clock fixedClock = Clock.fixed(Instant.parse("2026-08-24T03:00:00Z"), ZoneOffset.UTC);
 
-        ChargeableSubscription result = new ChargeableSubscriptionAdapter(subscriptionRepository, priceVersionRepository, fixedClock)
+        ChargeableSubscription result = new ChargeableSubscriptionAdapter(
+                subscriptionRepository, priceVersionRepository, customerPaymentMethodPort, fixedClock)
                 .loadForCharge(subscription.getId());
 
         assertThat(result.billingPeriod()).isEqualTo(trialEndDate);
@@ -117,7 +122,8 @@ class ChargeableSubscriptionAdapterTest {
         UUID subscriptionId = UUID.randomUUID();
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> new ChargeableSubscriptionAdapter(subscriptionRepository, priceVersionRepository)
+        assertThatThrownBy(() -> new ChargeableSubscriptionAdapter(
+                subscriptionRepository, priceVersionRepository, customerPaymentMethodPort)
                 .loadForCharge(subscriptionId))
                 .isInstanceOf(IllegalStateException.class);
     }
@@ -132,7 +138,8 @@ class ChargeableSubscriptionAdapterTest {
         when(priceVersionRepository.findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(
                 plan.getId(), dueDate.atStartOfDay(ZoneOffset.UTC).toInstant())).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> new ChargeableSubscriptionAdapter(subscriptionRepository, priceVersionRepository)
+        assertThatThrownBy(() -> new ChargeableSubscriptionAdapter(
+                subscriptionRepository, priceVersionRepository, customerPaymentMethodPort)
                 .loadForCharge(subscription.getId()))
                 .isInstanceOf(IllegalStateException.class);
     }

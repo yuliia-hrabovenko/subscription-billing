@@ -53,7 +53,7 @@ class DunningRetryChargeTest {
     }
 
     private ChargeableSubscription retryChargeable(UUID subscriptionId) {
-        return new ChargeableSubscription(subscriptionId, "tok_visa", new BigDecimal("19.00"),
+        return new ChargeableSubscription(subscriptionId, "tok_visa", "cus_visa", new BigDecimal("19.00"),
                 UUID.randomUUID(), LocalDate.of(2027, 1, 1), 1, true);
     }
 
@@ -61,7 +61,7 @@ class DunningRetryChargeTest {
     void aSuccessfulRetryRecordsTheChargeAndAdvancesTheBillingCycle() {
         UUID subscriptionId = UUID.randomUUID();
         ChargeableSubscription chargeable = retryChargeable(subscriptionId);
-        when(paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.amount()))
+        when(paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.providerCustomerId(), chargeable.amount()))
                 .thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
         DunningRetryChargeResult result =
@@ -78,7 +78,7 @@ class DunningRetryChargeTest {
     void aSuccessfulSelfServiceRetryForwardsTheCustomerTriggerToTheBillingCycleAdvance() {
         UUID subscriptionId = UUID.randomUUID();
         ChargeableSubscription chargeable = retryChargeable(subscriptionId);
-        when(paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.amount()))
+        when(paymentGatewayClient.charge(chargeable.paymentMethodToken(), chargeable.providerCustomerId(), chargeable.amount()))
                 .thenReturn(new ChargeResult.Succeeded("gw-txn-1"));
 
         charge().attempt(subscriptionId, chargeable, ATTEMPTED_AT, "corr-1", ChargeTrigger.CUSTOMER);
@@ -92,7 +92,7 @@ class DunningRetryChargeTest {
         UUID invoiceId = UUID.randomUUID();
         ChargeableSubscription chargeable = retryChargeable(subscriptionId);
         DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 1, false);
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(subscriptionId, chargeable.billingPeriod(),
                 chargeable.priceVersionId(), null, ATTEMPTED_AT)).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
@@ -112,7 +112,7 @@ class DunningRetryChargeTest {
         UUID invoiceId = UUID.randomUUID();
         ChargeableSubscription chargeable = retryChargeable(subscriptionId);
         DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 3, true);
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(any(), any(), any(), any(), any())).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
         when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, ATTEMPTED_AT, "corr-1", ChargeTrigger.SYSTEM))
@@ -130,7 +130,7 @@ class DunningRetryChargeTest {
         UUID invoiceId = UUID.randomUUID();
         ChargeableSubscription chargeable = retryChargeable(subscriptionId);
         DunningRetryState retryState = new DunningRetryState(Instant.parse("2027-01-01T10:00:00Z"), 3, true);
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.Declined("card_declined"));
         when(chargeRecordingPort.recordFailedCharge(any(), any(), any(), any(), any())).thenReturn(invoiceId);
         when(chargeRecordingPort.recordRetryAttempt(invoiceId)).thenReturn(retryState);
         when(dunningHandoff.onRetryFailed(subscriptionId, invoiceId, retryState, ATTEMPTED_AT, "corr-1", ChargeTrigger.CUSTOMER))
@@ -145,7 +145,7 @@ class DunningRetryChargeTest {
     void aTransientFailureRecordsNothingAndHandsOffNothing() {
         UUID subscriptionId = UUID.randomUUID();
         ChargeableSubscription chargeable = retryChargeable(subscriptionId);
-        when(paymentGatewayClient.charge(any(), any())).thenReturn(new ChargeResult.FailedTransiently("gateway_timeout"));
+        when(paymentGatewayClient.charge(any(), any(), any())).thenReturn(new ChargeResult.FailedTransiently("gateway_timeout"));
 
         DunningRetryChargeResult result =
                 charge().attempt(subscriptionId, chargeable, ATTEMPTED_AT, "corr-1", ChargeTrigger.SYSTEM);

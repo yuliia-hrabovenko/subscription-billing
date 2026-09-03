@@ -1,7 +1,9 @@
 package com.subscriptionbilling.api;
 
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
+import com.subscriptionbilling.api.support.FakePaymentMethodStore;
 import com.subscriptionbilling.api.support.PaymentGatewayTestConfig;
+import com.subscriptionbilling.api.support.PaymentMethodTestConfig;
 import com.subscriptionbilling.billingcore.customer.Customer;
 import com.subscriptionbilling.billingcore.customer.CustomerRepository;
 import com.subscriptionbilling.billingcore.plan.Plan;
@@ -46,12 +48,15 @@ class BillingJobEntryPointIT extends AbstractPostgresIntegrationTest {
     @Autowired
     private InvoiceRepository invoiceRepository;
 
+    @Autowired
+    private FakePaymentMethodStore fakePaymentMethodStore;
+
     @Test
     void jobArgumentChargesADueSubscriptionAgainstRealPostgresAndExitsZero() {
         Plan proPlan = planRepository.findByCode("pro").orElseThrow();
         Customer customer = new Customer(UUID.randomUUID(), "cronjob-it-" + UUID.randomUUID() + "@example.com");
-        customer.setPaymentMethodToken("tok_visa");
         customerRepository.saveAndFlush(customer);
+        fakePaymentMethodStore.put(customer.getId(), "tok_visa");
         LocalDate billingPeriod = LocalDate.of(2026, 2, 1);
         Subscription subscription = Subscription.startPaidImmediately(
                 UUID.randomUUID(), customer, proPlan, Instant.parse("2026-02-01T00:00:00Z"));
@@ -63,7 +68,7 @@ class BillingJobEntryPointIT extends AbstractPostgresIntegrationTest {
                 "--spring.datasource.url=" + POSTGRES.getJdbcUrl(),
                 "--spring.datasource.username=" + POSTGRES.getUsername(),
                 "--spring.datasource.password=" + POSTGRES.getPassword()
-        }, PaymentGatewayTestConfig.class);
+        }, PaymentGatewayTestConfig.class, PaymentMethodTestConfig.class);
 
         assertThat(exitCode).isEqualTo(0);
         Optional<Invoice> invoice =

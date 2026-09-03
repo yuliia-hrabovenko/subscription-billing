@@ -1,10 +1,10 @@
 {
-  "name": "stripe-charge-timeout",
+  "name": "stripe-payment-intent-timeout",
   "request": {
     "method": "POST",
-    "urlPath": "/v1/charges",
+    "urlPath": "/v1/payment_intents",
     "bodyPatterns": [
-      { "contains": "source=tok_timeout" }
+      { "contains": "payment_method=pm_timeout" }
     ]
   },
   "response": {
@@ -13,10 +13,9 @@
     "headers": { "Content-Type": "application/json" },
     "jsonBody": {
       "id": "ch_3PstripeTimeout001",
-      "object": "charge",
+      "object": "payment_intent",
       "amount": 1999,
       "currency": "usd",
-      "paid": true,
       "status": "succeeded"
     }
   }
