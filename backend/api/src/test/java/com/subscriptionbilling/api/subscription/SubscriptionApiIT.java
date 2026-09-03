@@ -1,12 +1,11 @@
 package com.subscriptionbilling.api.subscription;
 
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
+import com.subscriptionbilling.api.support.FakePaymentMethodStore;
 import com.subscriptionbilling.api.support.PaymentGatewayTestConfig;
 import com.subscriptionbilling.audit.ActorType;
 import com.subscriptionbilling.audit.AuditLogEntry;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
-import com.subscriptionbilling.billingcore.customer.Customer;
-import com.subscriptionbilling.billingcore.customer.CustomerRepository;
 import com.subscriptionbilling.billingcore.plan.Plan;
 import com.subscriptionbilling.billingcore.plan.PlanRepository;
 import com.subscriptionbilling.billingcore.plan.PriceVersion;
@@ -66,7 +65,7 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
     private PriceVersionRepository priceVersionRepository;
 
     @Autowired
-    private CustomerRepository customerRepository;
+    private FakePaymentMethodStore fakePaymentMethodStore;
 
     @Autowired
     private SubscriptionRepository subscriptionRepository;
@@ -818,9 +817,7 @@ class SubscriptionApiIT extends AbstractPostgresIntegrationTest {
 
     private void updatePaymentMethodToken(UUID subscriptionId, String paymentMethodToken) {
         Subscription subscription = subscriptionRepository.findById(subscriptionId).orElseThrow();
-        Customer customer = customerRepository.findById(subscription.getCustomer().getId()).orElseThrow();
-        customer.setPaymentMethodToken(paymentMethodToken);
-        customerRepository.saveAndFlush(customer);
+        fakePaymentMethodStore.put(subscription.getCustomer().getId(), paymentMethodToken);
     }
 
     private <T> T readBody(MvcTestResult result, Class<T> type) {

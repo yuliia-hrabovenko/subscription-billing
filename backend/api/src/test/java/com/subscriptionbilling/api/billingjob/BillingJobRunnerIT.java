@@ -2,6 +2,7 @@ package com.subscriptionbilling.api.billingjob;
 
 import com.subscriptionbilling.api.support.AbstractPostgresIntegrationTest;
 import com.subscriptionbilling.api.support.CountingPaymentGatewayClient;
+import com.subscriptionbilling.api.support.FakePaymentMethodStore;
 import com.subscriptionbilling.api.support.PaymentGatewayTestConfig;
 import com.subscriptionbilling.audit.AuditLogEntry;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
@@ -39,14 +40,6 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Proves {@link BillingJobRunner#run()} end to end against real Postgres, wired through
- * {@code billing-core}'s, {@code invoicing}'s, and {@code dunning}'s port implementations
- * and the token-driven {@link com.subscriptionbilling.api.support.PaymentGatewayTestConfig}
- * fake — the only module with every one of those on its classpath at once, which is why
- * this (and the selection coverage it absorbs from ticket #10's now-relocated {@code
- * BillingJobRunnerIT}) lives here rather than in {@code billing-core}.
- */
 @SpringBootTest
 class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
 
@@ -55,6 +48,9 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private CustomerRepository customerRepository;
+
+    @Autowired
+    private FakePaymentMethodStore fakePaymentMethodStore;
 
     @Autowired
     private PlanRepository planRepository;
@@ -278,9 +274,7 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
         billingJobRunner.run(); // initial charge fails -> suspended, day-1 retry scheduled
         forceDueToday(subscription.getId());
         // Simulates the Customer updating their card before the day-1 retry fires.
-        Customer customer = customerRepository.findById(subscription.getCustomer().getId()).orElseThrow();
-        customer.setPaymentMethodToken("tok_visa");
-        customerRepository.saveAndFlush(customer);
+        fakePaymentMethodStore.put(subscription.getCustomer().getId(), "tok_visa");
 
         billingJobRunner.run(); // day-1 retry succeeds -> restored to active
 
@@ -592,7 +586,8 @@ class BillingJobRunnerIT extends AbstractPostgresIntegrationTest {
 
     private Customer seedCustomer(String paymentMethodToken) {
         Customer customer = new Customer(UUID.randomUUID(), "billing-job-it-" + UUID.randomUUID() + "@example.com");
-        customer.setPaymentMethodToken(paymentMethodToken);
-        return customerRepository.saveAndFlush(customer);
+        customer = customerRepository.saveAndFlush(customer);
+        fakePaymentMethodStore.put(customer.getId(), paymentMethodToken);
+        return customer;
     }
 }

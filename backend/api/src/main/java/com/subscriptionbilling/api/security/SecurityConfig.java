@@ -99,6 +99,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.GET, "/api/v1/plans").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/subscriptions").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/payment-methods/setup-intent").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/customers/login").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/webhooks/gateway").permitAll()
                         .requestMatchers(HttpMethod.GET, "/actuator/prometheus").permitAll()

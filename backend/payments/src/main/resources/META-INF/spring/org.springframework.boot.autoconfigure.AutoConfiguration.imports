@@ -1,1 +1,2 @@
 com.subscriptionbilling.payments.gateway.StripeGatewayAutoConfiguration
+com.subscriptionbilling.payments.paymentmethod.PaymentMethodAutoConfiguration

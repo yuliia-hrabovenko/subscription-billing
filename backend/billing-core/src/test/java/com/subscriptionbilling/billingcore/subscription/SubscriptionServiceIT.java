@@ -97,7 +97,7 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         String email = "trialist-" + UUID.randomUUID() + "@example.com";
 
         SubscriptionSignupResult result = subscriptionService.signUp(
-                new SignupCommand(proPlanId, email, null, true, "gw_tok_abc123", "password123!", "corr-it-2"));
+                new SignupCommand(proPlanId, email, null, true, "pm_abc123", "password123!", "corr-it-2"));
 
         assertThat(result.state()).isEqualTo(SubscriptionState.TRIALING);
         assertThat(result.trialEndsAt()).isAfter(Instant.now());
@@ -108,9 +108,6 @@ class SubscriptionServiceIT extends AbstractPostgresIntegrationTest {
         assertThat(persisted.isTrialUsed()).isTrue();
         assertThat(persisted.getTrialEndsAt()).isNotNull();
         assertThat(persisted.getBillingCycleAnchor()).isNull();
-
-        Customer persistedCustomer = customerRepository.findById(persisted.getCustomer().getId()).orElseThrow();
-        assertThat(persistedCustomer.getPaymentMethodToken()).isEqualTo("gw_tok_abc123");
     }
 
     @Test

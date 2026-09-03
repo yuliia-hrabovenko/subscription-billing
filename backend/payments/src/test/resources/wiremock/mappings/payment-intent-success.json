@@ -1,0 +1,23 @@
+{
+  "name": "stripe-payment-intent-success",
+  "request": {
+    "method": "POST",
+    "urlPath": "/v1/payment_intents",
+    "bodyPatterns": [
+      { "contains": "payment_method=pm_visa" }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": {
+      "id": "ch_3PstripeSuccess001",
+      "object": "payment_intent",
+      "amount": 1999,
+      "currency": "usd",
+      "status": "succeeded",
+      "payment_method": "pm_visa",
+      "created": 1735689600
+    }
+  }
+}

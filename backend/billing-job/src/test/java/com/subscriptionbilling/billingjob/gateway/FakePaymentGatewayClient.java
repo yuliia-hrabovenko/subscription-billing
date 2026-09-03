@@ -24,7 +24,7 @@ public class FakePaymentGatewayClient implements PaymentGatewayClient {
     public static final String VALID_SIGNATURE_HEADER = "valid_signature";
 
     @Override
-    public ChargeResult charge(String paymentMethodToken, BigDecimal amount) {
+    public ChargeResult charge(String paymentMethodToken, String providerCustomerId, BigDecimal amount) {
         if (DECLINE_TOKEN.equals(paymentMethodToken)) {
             return new ChargeResult.Declined("card_declined");
         }

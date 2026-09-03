@@ -240,6 +240,26 @@
         }
       }
     },
+    "/api/v1/payment-methods/setup-intent": {
+      "post": {
+        "tags": [
+          "setup-intent-controller"
+        ],
+        "operationId": "createSetupIntent",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupIntentResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/customers/login": {
       "post": {
         "tags": [
@@ -885,6 +905,14 @@
         "required": [
           "planId"
         ]
+      },
+      "SetupIntentResponse": {
+        "type": "object",
+        "properties": {
+          "clientSecret": {
+            "type": "string"
+          }
+        }
       },
       "CustomerLoginRequest": {
         "type": "object",

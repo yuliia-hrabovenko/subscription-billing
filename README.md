@@ -12,7 +12,7 @@ single Spring Boot API over HTTP. The API is a modular monolith: each module own
 own domain rules, persistence, and data, and modules only ever talk to each other through
 application interfaces, commands, domain events, or read models — never by reaching into
 another module's tables directly. All modules share one PostgreSQL database, but table
-ownership per module stays explicit (see [`docs/architecture/architecture.md`](docs/architecture/architecture.md)).
+ownership per module stays explicit.
 
 ```
                  ┌────────────────────┐
@@ -101,9 +101,7 @@ The API listens on `http://localhost:8080` (override with `SERVER_PORT`). Promet
 scrapes `/actuator/prometheus`; Grafana is at `http://localhost:3001` (admin/admin).
 
 Admin sign-in is via Auth0, which is SaaS-only — there's no bundled docker-compose
-service for it. Full setup steps and troubleshooting live in
-[`docs/operations/auth0-admin-sso-setup.md`](docs/operations/auth0-admin-sso-setup.md);
-short version: create a free Auth0 Developer org, register a native/SPA OIDC application
+service for it. Short version setup: create a free Auth0 Developer org, register a native/SPA OIDC application
 (Authorization Code + PKCE, no client secret, redirect URI
 `http://localhost:5173/admin/sso-callback`), register a custom API, and add a Post-Login
 Action populating namespaced `groups`/`preferred_username` claims — then set
@@ -171,9 +169,7 @@ picks which store to attach a bearer token from per-request, based on whether th
 targets `/api/v1/admin/*`.
 
 Stack: React 19, TypeScript, MUI, React Router, TanStack Query for server state, React
-Hook Form + Zod for forms/validation, Recharts for the admin overview charts. See
-[`docs/frontend/CLAUDE.md`](docs/frontend/CLAUDE.md) for conventions.
-
+Hook Form + Zod for forms/validation, Recharts for the admin overview charts.
 **API client**: OpenAPI is the source of truth. The backend's OpenAPI spec is synced
 locally (`npm run sync:api-spec`) and turned into a typed schema (`npm run generate:api`)
 consumed via `openapi-fetch`/`openapi-react-query` — no hand-written API types.

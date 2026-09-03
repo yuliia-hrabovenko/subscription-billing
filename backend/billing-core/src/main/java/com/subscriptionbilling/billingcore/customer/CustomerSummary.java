@@ -4,10 +4,9 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Read model for the Admin customer listing. Deliberately excludes {@link
- * Customer#getPaymentMethodToken()} — a gateway-provided reference an Admin's
- * read-only visibility scope has no need to see, even though it isn't a raw card
- * number.
+ * Read model for the Admin customer listing. Deliberately excludes any card-on-file
+ * detail — an Admin's read-only visibility scope has no need to see it, and it isn't
+ * carried on {@link Customer} in the first place (see ADR-0011).
  */
 public record CustomerSummary(UUID id, String email, Instant createdAt) {
 

@@ -3,9 +3,7 @@ package com.subscriptionbilling.billingcore.subscription;
 import com.subscriptionbilling.audit.ActorType;
 import com.subscriptionbilling.audit.AuditLogEntry;
 import com.subscriptionbilling.audit.AuditLogEntryRepository;
-import com.subscriptionbilling.billingcore.auth.CustomerTokenIssuer;
 import com.subscriptionbilling.billingcore.customer.Customer;
-import com.subscriptionbilling.billingcore.customer.CustomerRepository;
 import com.subscriptionbilling.billingcore.idempotency.IdempotencyService;
 import com.subscriptionbilling.billingcore.plan.Plan;
 import com.subscriptionbilling.billingcore.plan.PlanCatalogService;
@@ -19,6 +17,7 @@ import com.subscriptionbilling.billingjob.dunning.DunningRetryCharge;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryChargeResult;
 import com.subscriptionbilling.billingjob.dunning.DunningRetryOutcome;
 import com.subscriptionbilling.billingjob.invoicing.InvoiceCancellationPort;
+import com.subscriptionbilling.billingjob.paymentmethod.PaymentMethodOnboardingPort;
 import com.subscriptionbilling.notifications.outbox.OutboxEvent;
 import com.subscriptionbilling.notifications.outbox.OutboxEventRepository;
 import org.junit.jupiter.api.Test;
@@ -27,7 +26,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
-import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -61,8 +59,6 @@ class SubscriptionServiceTest {
     private static final Instant FIXED_NOW = Instant.parse("2026-08-22T10:15:30Z");
 
     @Mock
-    private CustomerRepository customerRepository;
-    @Mock
     private PlanRepository planRepository;
     @Mock
     private SubscriptionRepository subscriptionRepository;
@@ -70,8 +66,6 @@ class SubscriptionServiceTest {
     private PlanCatalogService planCatalogService;
     @Mock
     private AuditLogEntryRepository auditLogEntryRepository;
-    @Mock
-    private CustomerTokenIssuer tokenIssuer;
     @Mock
     private IdempotencyService idempotencyService;
     @Mock
@@ -83,70 +77,54 @@ class SubscriptionServiceTest {
     @Mock
     private OutboxEventRepository outboxEventRepository;
     @Mock
-    private PasswordEncoder passwordEncoder;
+    private PaymentMethodOnboardingPort paymentMethodOnboardingPort;
+    @Mock
+    private SubscriptionSignupWriter signupWriter;
 
     private final UUID planId = UUID.randomUUID();
     private final Plan freePlan = new Plan(planId, "free", "Free");
     private final Plan proPlan = new Plan(planId, "pro", "Pro");
 
     private SubscriptionService service() {
-        return new SubscriptionService(customerRepository, planRepository, subscriptionRepository,
-                planCatalogService, auditLogEntryRepository, tokenIssuer, idempotencyService,
+        return new SubscriptionService(planRepository, subscriptionRepository,
+                planCatalogService, auditLogEntryRepository, idempotencyService,
                 chargeableSubscriptionPort, dunningRetryCharge, invoiceCancellationPort, outboxEventRepository,
-                passwordEncoder, Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
+                paymentMethodOnboardingPort, signupWriter, Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
     }
 
     @Test
-    void freeSignupWithNoExistingCustomerCreatesAnActiveSubscriptionWithNoPriorState() {
+    void freeSignupWithNoExistingCustomerDelegatesToTheWriterAndNeverCallsPaymentMethodOnboarding() {
         when(planCatalogService.findAvailablePlan(planId))
                 .thenReturn(Optional.of(new PlanSummary(planId, "free", "Free", new BigDecimal("0.00"))));
-        when(customerRepository.save(any(Customer.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(planRepository.getReferenceById(planId)).thenReturn(freePlan);
-        when(tokenIssuer.issueFor(any())).thenReturn("minted-token");
-        when(passwordEncoder.encode("password123!")).thenReturn("hashed-password123!");
+        SubscriptionSignupResult expected = new SubscriptionSignupResult(
+                UUID.randomUUID(), SubscriptionState.ACTIVE, planId, "minted-token", null, null);
+        when(signupWriter.write(any(SignupCommand.class), any(UUID.class), any(PlanSummary.class), eq(true)))
+                .thenReturn(expected);
+        SignupCommand command = new SignupCommand(planId, "user@example.com", null, false, null, "password123!", "corr-1");
 
-        SubscriptionSignupResult result = service().signUp(
-                new SignupCommand(planId, "user@example.com", null, false, null, "password123!", "corr-1"));
+        SubscriptionSignupResult result = service().signUp(command);
 
-        assertThat(result.state()).isEqualTo(SubscriptionState.ACTIVE);
-        assertThat(result.planId()).isEqualTo(planId);
-        assertThat(result.accessToken()).isEqualTo("minted-token");
-        assertThat(result.trialEndsAt()).isNull();
-        assertThat(result.billingCycleAnchor()).isNull();
-
-        ArgumentCaptor<Subscription> savedSubscription = ArgumentCaptor.forClass(Subscription.class);
-        verify(subscriptionRepository).save(savedSubscription.capture());
-        assertThat(savedSubscription.getValue().getState()).isEqualTo(SubscriptionState.ACTIVE);
-
-        ArgumentCaptor<Customer> savedCustomer = ArgumentCaptor.forClass(Customer.class);
-        verify(customerRepository).save(savedCustomer.capture());
-        assertThat(savedCustomer.getValue().getEmail()).isEqualTo("user@example.com");
-        assertThat(savedCustomer.getValue().getPasswordHash()).isEqualTo("hashed-password123!");
-
-        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
-        verify(auditLogEntryRepository).append(auditEntry.capture());
-        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.CUSTOMER);
-        assertThat(auditEntry.getValue().getOldState()).isNull();
-        assertThat(auditEntry.getValue().getNewState()).isEqualTo("ACTIVE");
-        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-1");
+        assertThat(result).isEqualTo(expected);
+        verifyNoInteractions(paymentMethodOnboardingPort);
+        verify(signupWriter).write(eq(command), any(UUID.class), any(PlanSummary.class), eq(true));
     }
 
     @Test
-    void freeSignupWithAnExistingCustomerIdReusesThatCustomerInsteadOfMintingANewOne() {
+    void freeSignupWithAnExistingCustomerIdPassesThatSameCustomerIdToTheWriterAndNeverCallsPaymentMethodOnboarding() {
         UUID existingCustomerId = UUID.randomUUID();
-        Customer existingCustomer = new Customer(existingCustomerId, "returning@example.com");
         when(planCatalogService.findAvailablePlan(planId))
                 .thenReturn(Optional.of(new PlanSummary(planId, "free", "Free", new BigDecimal("0.00"))));
-        when(customerRepository.findById(existingCustomerId)).thenReturn(Optional.of(existingCustomer));
         when(subscriptionRepository.existsByCustomerIdAndStateNot(existingCustomerId, SubscriptionState.CANCELED))
                 .thenReturn(false);
-        when(planRepository.getReferenceById(planId)).thenReturn(freePlan);
-        when(tokenIssuer.issueFor(existingCustomerId)).thenReturn("minted-token");
+        SubscriptionSignupResult expected = new SubscriptionSignupResult(
+                UUID.randomUUID(), SubscriptionState.ACTIVE, planId, "minted-token", null, null);
+        when(signupWriter.write(any(SignupCommand.class), eq(existingCustomerId), any(PlanSummary.class), eq(true)))
+                .thenReturn(expected);
 
         service().signUp(new SignupCommand(planId, null, existingCustomerId, false, null, "password123!", "corr-2"));
 
-        verify(customerRepository, never()).save(any());
-        verify(tokenIssuer).issueFor(existingCustomerId);
+        verifyNoInteractions(paymentMethodOnboardingPort);
+        verify(signupWriter).write(any(SignupCommand.class), eq(existingCustomerId), any(PlanSummary.class), eq(true));
     }
 
     @Test
@@ -156,16 +134,14 @@ class SubscriptionServiceTest {
         assertThatThrownBy(() -> service().signUp(new SignupCommand(planId, "user@example.com", null, false, null, "password123!", "corr-3")))
                 .isInstanceOf(PlanUnavailableForSignupException.class);
 
-        verify(subscriptionRepository, never()).save(any());
+        verifyNoInteractions(paymentMethodOnboardingPort, signupWriter);
     }
 
     @Test
-    void aCustomerWithAnExistingNonCanceledSubscriptionIsRejectedFromSigningUpAgain() {
+    void aCustomerWithAnExistingNonCanceledSubscriptionIsRejectedBeforeCallingPaymentMethodOnboardingOrTheWriter() {
         UUID existingCustomerId = UUID.randomUUID();
-        Customer existingCustomer = new Customer(existingCustomerId, "returning@example.com");
         when(planCatalogService.findAvailablePlan(planId))
                 .thenReturn(Optional.of(new PlanSummary(planId, "free", "Free", new BigDecimal("0.00"))));
-        when(customerRepository.findById(existingCustomerId)).thenReturn(Optional.of(existingCustomer));
         when(subscriptionRepository.existsByCustomerIdAndStateNot(existingCustomerId, SubscriptionState.CANCELED))
                 .thenReturn(true);
 
@@ -173,71 +149,55 @@ class SubscriptionServiceTest {
                 new SignupCommand(planId, null, existingCustomerId, false, null, "password123!", "corr-4")))
                 .isInstanceOf(DuplicateSubscriptionException.class);
 
-        verify(subscriptionRepository, never()).save(any());
+        verifyNoInteractions(paymentMethodOnboardingPort, signupWriter);
     }
 
     @Test
-    void trialSignupForAPaidPlanCreatesATrialingSubscriptionWithNoBillingCycle() {
+    void trialSignupForAPaidPlanAttachesThePaymentMethodThenDelegatesToTheWriterWithTheSameCustomerId() {
         when(planCatalogService.findAvailablePlan(planId))
                 .thenReturn(Optional.of(new PlanSummary(planId, "pro", "Pro", new BigDecimal("19.00"))));
-        when(customerRepository.save(any(Customer.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(planRepository.getReferenceById(planId)).thenReturn(proPlan);
-        when(tokenIssuer.issueFor(any())).thenReturn("minted-token");
+        SubscriptionSignupResult expected = new SubscriptionSignupResult(UUID.randomUUID(), SubscriptionState.TRIALING,
+                planId, "minted-token", FIXED_NOW.plus(SubscriptionService.TRIAL_DURATION), null);
+        when(signupWriter.write(any(SignupCommand.class), any(UUID.class), any(PlanSummary.class), eq(false)))
+                .thenReturn(expected);
+        SignupCommand command = new SignupCommand(
+                planId, "trialist@example.com", null, true, "pm_abc123", "password123!", "corr-5");
 
-        SubscriptionSignupResult result = service().signUp(
-                new SignupCommand(planId, "trialist@example.com", null, true, "gw_tok_abc123", "password123!", "corr-5"));
+        SubscriptionSignupResult result = service().signUp(command);
 
-        assertThat(result.state()).isEqualTo(SubscriptionState.TRIALING);
-        assertThat(result.trialEndsAt()).isEqualTo(FIXED_NOW.plus(SubscriptionService.TRIAL_DURATION));
-        assertThat(result.billingCycleAnchor()).isNull();
+        assertThat(result).isEqualTo(expected);
 
-        ArgumentCaptor<Subscription> savedSubscription = ArgumentCaptor.forClass(Subscription.class);
-        verify(subscriptionRepository).save(savedSubscription.capture());
-        assertThat(savedSubscription.getValue().getState()).isEqualTo(SubscriptionState.TRIALING);
-        assertThat(savedSubscription.getValue().isTrialUsed()).isTrue();
-        assertThat(savedSubscription.getValue().getBillingCycleAnchor()).isNull();
-
-        ArgumentCaptor<Customer> savedCustomer = ArgumentCaptor.forClass(Customer.class);
-        verify(customerRepository).save(savedCustomer.capture());
-        assertThat(savedCustomer.getValue().getPaymentMethodToken()).isEqualTo("gw_tok_abc123");
-
-        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
-        verify(auditLogEntryRepository).append(auditEntry.capture());
-        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.CUSTOMER);
-        assertThat(auditEntry.getValue().getNewState()).isEqualTo("TRIALING");
-        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-5");
+        ArgumentCaptor<UUID> attachedCustomerId = ArgumentCaptor.forClass(UUID.class);
+        verify(paymentMethodOnboardingPort).attach(attachedCustomerId.capture(), eq("pm_abc123"));
+        ArgumentCaptor<UUID> writtenCustomerId = ArgumentCaptor.forClass(UUID.class);
+        verify(signupWriter).write(eq(command), writtenCustomerId.capture(), any(PlanSummary.class), eq(false));
+        assertThat(writtenCustomerId.getValue()).isEqualTo(attachedCustomerId.getValue());
     }
 
     @Test
-    void immediatePaidSignupCreatesAnActiveSubscriptionWithABillingCycleAnchoredToNow() {
+    void immediatePaidSignupAttachesThePaymentMethodThenDelegatesToTheWriterWithTheSameCustomerId() {
         when(planCatalogService.findAvailablePlan(planId))
                 .thenReturn(Optional.of(new PlanSummary(planId, "pro", "Pro", new BigDecimal("19.00"))));
-        when(customerRepository.save(any(Customer.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(planRepository.getReferenceById(planId)).thenReturn(proPlan);
-        when(tokenIssuer.issueFor(any())).thenReturn("minted-token");
+        SubscriptionSignupResult expected = new SubscriptionSignupResult(
+                UUID.randomUUID(), SubscriptionState.ACTIVE, planId, "minted-token", null, FIXED_NOW);
+        when(signupWriter.write(any(SignupCommand.class), any(UUID.class), any(PlanSummary.class), eq(false)))
+                .thenReturn(expected);
+        SignupCommand command = new SignupCommand(
+                planId, "immediate@example.com", null, false, "pm_abc123", "password123!", "corr-6");
 
-        SubscriptionSignupResult result = service().signUp(
-                new SignupCommand(planId, "immediate@example.com", null, false, "gw_tok_abc123", "password123!", "corr-6"));
+        SubscriptionSignupResult result = service().signUp(command);
 
-        assertThat(result.state()).isEqualTo(SubscriptionState.ACTIVE);
-        assertThat(result.trialEndsAt()).isNull();
-        assertThat(result.billingCycleAnchor()).isEqualTo(FIXED_NOW);
+        assertThat(result).isEqualTo(expected);
 
-        ArgumentCaptor<Subscription> savedSubscription = ArgumentCaptor.forClass(Subscription.class);
-        verify(subscriptionRepository).save(savedSubscription.capture());
-        assertThat(savedSubscription.getValue().getState()).isEqualTo(SubscriptionState.ACTIVE);
-        assertThat(savedSubscription.getValue().isTrialUsed()).isFalse();
-        assertThat(savedSubscription.getValue().getBillingCycleAnchor()).isEqualTo(FIXED_NOW);
-
-        ArgumentCaptor<AuditLogEntry> auditEntry = ArgumentCaptor.forClass(AuditLogEntry.class);
-        verify(auditLogEntryRepository).append(auditEntry.capture());
-        assertThat(auditEntry.getValue().getActorType()).isEqualTo(ActorType.CUSTOMER);
-        assertThat(auditEntry.getValue().getNewState()).isEqualTo("ACTIVE");
-        assertThat(auditEntry.getValue().getCorrelationId()).isEqualTo("corr-6");
+        ArgumentCaptor<UUID> attachedCustomerId = ArgumentCaptor.forClass(UUID.class);
+        verify(paymentMethodOnboardingPort).attach(attachedCustomerId.capture(), eq("pm_abc123"));
+        ArgumentCaptor<UUID> writtenCustomerId = ArgumentCaptor.forClass(UUID.class);
+        verify(signupWriter).write(eq(command), writtenCustomerId.capture(), any(PlanSummary.class), eq(false));
+        assertThat(writtenCustomerId.getValue()).isEqualTo(attachedCustomerId.getValue());
     }
 
     @Test
-    void trialSignupWithoutAPaymentMethodTokenIsRejected() {
+    void trialSignupWithoutAPaymentMethodTokenIsRejectedWithoutCallingPaymentMethodOnboardingOrTheWriter() {
         when(planCatalogService.findAvailablePlan(planId))
                 .thenReturn(Optional.of(new PlanSummary(planId, "pro", "Pro", new BigDecimal("19.00"))));
 
@@ -245,11 +205,11 @@ class SubscriptionServiceTest {
                 new SignupCommand(planId, "trialist@example.com", null, true, null, "password123!", "corr-7")))
                 .isInstanceOf(PaymentMethodRequiredException.class);
 
-        verify(subscriptionRepository, never()).save(any());
+        verifyNoInteractions(paymentMethodOnboardingPort, signupWriter);
     }
 
     @Test
-    void immediatePaidSignupWithoutAPaymentMethodTokenIsRejected() {
+    void immediatePaidSignupWithoutAPaymentMethodTokenIsRejectedWithoutCallingPaymentMethodOnboardingOrTheWriter() {
         when(planCatalogService.findAvailablePlan(planId))
                 .thenReturn(Optional.of(new PlanSummary(planId, "pro", "Pro", new BigDecimal("19.00"))));
 
@@ -257,7 +217,7 @@ class SubscriptionServiceTest {
                 new SignupCommand(planId, "immediate@example.com", null, false, "   ", "password123!", "corr-8")))
                 .isInstanceOf(PaymentMethodRequiredException.class);
 
-        verify(subscriptionRepository, never()).save(any());
+        verifyNoInteractions(paymentMethodOnboardingPort, signupWriter);
     }
 
     @Test
@@ -1053,7 +1013,7 @@ class SubscriptionServiceTest {
         Subscription subscription = new Subscription(
                 subscriptionId, new Customer(customerId, "suspended@example.com"), proPlan, SubscriptionState.SUSPENDED);
         ChargeableSubscription chargeable = new ChargeableSubscription(
-                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 1), 1, true);
+                subscriptionId, "tok_visa", "cus_visa", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 1), 1, true);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
         when(chargeableSubscriptionPort.loadForCharge(subscriptionId)).thenReturn(chargeable);
         when(dunningRetryCharge.attempt(
@@ -1131,7 +1091,7 @@ class SubscriptionServiceTest {
         Subscription subscription = new Subscription(
                 subscriptionId, new Customer(customerId, "suspended@example.com"), proPlan, SubscriptionState.SUSPENDED);
         ChargeableSubscription chargeable = new ChargeableSubscription(
-                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 1), 1, true);
+                subscriptionId, "tok_visa", "cus_visa", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 1), 1, true);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
         when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-3"))
                 .thenReturn(true);
@@ -1153,7 +1113,7 @@ class SubscriptionServiceTest {
         Subscription subscription = new Subscription(
                 subscriptionId, new Customer(customerId, "suspended@example.com"), proPlan, SubscriptionState.SUSPENDED);
         ChargeableSubscription chargeable = new ChargeableSubscription(
-                subscriptionId, "tok_visa", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 1), 1, true);
+                subscriptionId, "tok_visa", "cus_visa", new BigDecimal("19.00"), UUID.randomUUID(), LocalDate.of(2026, 8, 1), 1, true);
         when(subscriptionRepository.findById(subscriptionId)).thenReturn(Optional.of(subscription));
         when(idempotencyService.recordIfNew(customerId, SubscriptionService.RETRY_PAYMENT_OPERATION, "key-4"))
                 .thenReturn(true);

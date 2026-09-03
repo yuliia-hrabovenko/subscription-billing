@@ -8,9 +8,9 @@ class WebhookEventTypeTest {
 
     @Test
     void resolvesEachRecognizedGatewayTypeValue() {
-        assertThat(WebhookEventType.fromGatewayTypeValue("charge.succeeded"))
+        assertThat(WebhookEventType.fromGatewayTypeValue("payment_intent.succeeded"))
                 .hasValue(WebhookEventType.PAYMENT_SUCCEEDED);
-        assertThat(WebhookEventType.fromGatewayTypeValue("charge.failed"))
+        assertThat(WebhookEventType.fromGatewayTypeValue("payment_intent.payment_failed"))
                 .hasValue(WebhookEventType.PAYMENT_FAILED);
         assertThat(WebhookEventType.fromGatewayTypeValue("charge.dispute.created"))
                 .hasValue(WebhookEventType.DISPUTE_OPENED);

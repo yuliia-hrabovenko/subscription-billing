@@ -21,6 +21,7 @@ import com.subscriptionbilling.invoicing.invoice.InvalidCursorException;
 import com.subscriptionbilling.invoicing.invoice.InvoiceAccessDeniedException;
 import com.subscriptionbilling.invoicing.invoice.InvoiceNotFoundException;
 import com.subscriptionbilling.invoicing.receipt.ReceiptNotAvailableException;
+import com.subscriptionbilling.payments.paymentmethod.PaymentMethodAttachmentException;
 import com.subscriptionbilling.webhooks.ingestion.ConflictingPaymentOutcomeException;
 import com.subscriptionbilling.webhooks.ingestion.InvalidWebhookSignatureException;
 import com.subscriptionbilling.webhooks.ingestion.MalformedWebhookPayloadException;
@@ -226,6 +227,17 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<Object> handlePaymentGatewayUnavailable(PaymentGatewayUnavailableException ex) {
         log.warn("Payment gateway unavailable [correlationId={}]", CorrelationIds.current(), ex);
         return respond(HttpStatus.BAD_GATEWAY, "PAYMENT_GATEWAY_UNAVAILABLE", ex.getMessage());
+    }
+
+    /**
+     * The gateway rejected onboarding the card itself (network failure, malformed
+     * response, or an outright attach rejection) — same upstream-failure framing as
+     * {@link #handlePaymentGatewayUnavailable}, not a client-facing validation error.
+     */
+    @ExceptionHandler(PaymentMethodAttachmentException.class)
+    public ResponseEntity<Object> handlePaymentMethodAttachmentFailed(PaymentMethodAttachmentException ex) {
+        log.warn("Payment method attachment failed [correlationId={}]", CorrelationIds.current(), ex);
+        return respond(HttpStatus.BAD_GATEWAY, "PAYMENT_METHOD_ATTACHMENT_FAILED", ex.getMessage());
     }
 
     /**

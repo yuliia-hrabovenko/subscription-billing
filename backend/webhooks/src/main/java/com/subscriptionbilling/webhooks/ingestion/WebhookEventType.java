@@ -9,8 +9,8 @@ import java.util.Optional;
  */
 public enum WebhookEventType {
 
-    PAYMENT_SUCCEEDED("charge.succeeded"),
-    PAYMENT_FAILED("charge.failed"),
+    PAYMENT_SUCCEEDED("payment_intent.succeeded"),
+    PAYMENT_FAILED("payment_intent.payment_failed"),
     DISPUTE_OPENED("charge.dispute.created");
 
     private final String gatewayTypeValue;

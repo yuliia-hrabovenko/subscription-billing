@@ -48,7 +48,7 @@ class PaymentOutcomeReconcilerTest {
     }
 
     private ChargeableSubscription chargeable(UUID subscriptionId, boolean dunningRetry) {
-        return new ChargeableSubscription(subscriptionId, "tok_visa", new BigDecimal("19.00"),
+        return new ChargeableSubscription(subscriptionId, "tok_visa", "cus_visa", new BigDecimal("19.00"),
                 UUID.randomUUID(), LocalDate.of(2027, 1, 8), 8, dunningRetry);
     }
 

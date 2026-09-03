@@ -30,14 +30,24 @@ import java.util.HexFormat;
 import java.util.List;
 
 /**
- * {@link PaymentGatewayClient} adapter charging a card-on-file token through Stripe's
- * {@code POST /v1/charges} endpoint (test mode, selected by which kind of API key is
- * configured). Maps Stripe's response shapes onto the three-way {@link ChargeResult}: a
- * {@code card_error} response is a {@link ChargeResult.Declined}; any other error
+ * {@link PaymentGatewayClient} adapter charging a Customer's saved card-on-file
+ * PaymentMethod through Stripe's {@code POST /v1/payment_intents} endpoint (test mode,
+ * selected by which kind of API key is configured), confirmed immediately and off-session
+ * -- {@code paymentMethodToken} is a Stripe PaymentMethod reference (e.g.
+ * {@code pm_...}), previously attached to a Customer during signup by {@link
+ * com.subscriptionbilling.payments.paymentmethod.PaymentMethodOnboardingService}, not a
+ * one-shot Charges-API token; {@code providerCustomerId} (that same Customer's Stripe {@code
+ * cus_...} id) must be sent alongside it -- Stripe rejects an attached PaymentMethod's
+ * confirmation without it (ADR-0012). Maps Stripe's response shapes onto the three-way {@link
+ * ChargeResult}: a {@code card_error} response (which also covers SCA's {@code
+ * authentication_required} -- ADR-0011 leaves re-authentication out of scope, so it is
+ * handled as an ordinary decline) is a {@link ChargeResult.Declined}; any other error
  * status, a request timeout, or a network-level failure is a {@link
  * ChargeResult.FailedTransiently} so it is never mistaken for a business decline. On
- * success, {@link ChargeResult.Succeeded#gatewayTransactionId()} is Stripe's own charge
- * ID, passed through unchanged.
+ * success, {@link ChargeResult.Succeeded#gatewayTransactionId()} is the PaymentIntent's
+ * own ID, passed through unchanged -- the same ID Stripe's {@code payment_intent.*}
+ * webhook events carry as {@code data.object.id}, which is what lets {@code webhooks}
+ * module reconciliation correlate against it.
  *
  * <p>PAN safety: sends only the given {@code paymentMethodToken} (a Stripe-issued
  * reference, never a raw card number) and never logs a request or response body — log
@@ -53,7 +63,7 @@ import java.util.List;
 public class StripePaymentGatewayClient implements PaymentGatewayClient {
 
     private static final Logger log = LoggerFactory.getLogger(StripePaymentGatewayClient.class);
-    private static final String CHARGES_PATH = "/v1/charges";
+    private static final String PAYMENT_INTENTS_PATH = "/v1/payment_intents";
     private static final String CARD_ERROR_TYPE = "card_error";
     private static final BigDecimal MINOR_UNITS_PER_MAJOR_UNIT = BigDecimal.valueOf(100);
     private static final String HMAC_ALGORITHM = "HmacSHA256";
@@ -85,22 +95,29 @@ public class StripePaymentGatewayClient implements PaymentGatewayClient {
 
     /**
      * Charges the given amount, in {@link StripeProperties#getCurrency()}, against the
-     * given Stripe payment-method token. A response timing out past {@link
-     * StripeProperties#getRequestTimeout()} or any network-level failure resolves to
-     * {@link ChargeResult.FailedTransiently} rather than propagating an exception.
+     * given Stripe PaymentMethod, confirming it immediately as an off-session charge (the
+     * Customer is not present to respond to an authentication challenge). A response
+     * timing out past {@link StripeProperties#getRequestTimeout()} or any network-level
+     * failure resolves to {@link ChargeResult.FailedTransiently} rather than propagating
+     * an exception.
      *
-     * @param paymentMethodToken the Stripe-issued card-on-file token; never a raw PAN
+     * @param paymentMethodToken the Stripe PaymentMethod reference (e.g. {@code pm_...})
+     *                           attached during signup; never a raw PAN
+     * @param providerCustomerId the Stripe Customer id (e.g. {@code cus_...}) this
+     *                           PaymentMethod is attached to -- Stripe rejects the charge
+     *                           without it, since an attached PaymentMethod cannot be
+     *                           confirmed against a PaymentIntent that doesn't name its Customer
      * @param amount             the amount to charge, in the billing currency's major unit (e.g. dollars)
-     * @return the resolved outcome: success with Stripe's charge ID, decline, or transient failure
+     * @return the resolved outcome: success with the PaymentIntent's ID, decline, or transient failure
      */
     @Override
-    public ChargeResult charge(String paymentMethodToken, BigDecimal amount) {
+    public ChargeResult charge(String paymentMethodToken, String providerCustomerId, BigDecimal amount) {
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(properties.getBaseUrl() + CHARGES_PATH))
+                .uri(URI.create(properties.getBaseUrl() + PAYMENT_INTENTS_PATH))
                 .timeout(properties.getRequestTimeout())
                 .header("Authorization", "Bearer " + properties.getApiKey())
                 .header("Content-Type", "application/x-www-form-urlencoded")
-                .POST(HttpRequest.BodyPublishers.ofString(chargeRequestBody(paymentMethodToken, amount)))
+                .POST(HttpRequest.BodyPublishers.ofString(chargeRequestBody(paymentMethodToken, providerCustomerId, amount)))
                 .build();
 
         HttpResponse<String> response;
@@ -208,17 +225,24 @@ public class StripePaymentGatewayClient implements PaymentGatewayClient {
     private record ParsedSignatureHeader(long timestamp, List<String> signatures) {
     }
 
-    private String chargeRequestBody(String paymentMethodToken, BigDecimal amount) {
+    private String chargeRequestBody(String paymentMethodToken, String providerCustomerId, BigDecimal amount) {
         long amountInMinorUnits = amount.multiply(MINOR_UNITS_PER_MAJOR_UNIT)
                 .setScale(0, RoundingMode.UNNECESSARY)
                 .longValueExact();
         return "amount=" + amountInMinorUnits
                 + "&currency=" + encode(properties.getCurrency())
-                + "&source=" + encode(paymentMethodToken);
+                + "&payment_method=" + encode(paymentMethodToken)
+                + "&customer=" + encode(providerCustomerId)
+                + "&confirm=true"
+                + "&off_session=true";
     }
 
     private ChargeResult toChargeResult(HttpResponse<String> response) {
         JsonNode body = readBody(response.body());
+        // A confirmed PaymentIntent that succeeds synchronously returns 200 with
+        // status=succeeded; a card_error on confirmation surfaces as a non-200 with an
+        // "error" body instead, handled below -- there is no PaymentIntent status this
+        // adapter needs to branch on beyond that.
         if (response.statusCode() == 200) {
             String gatewayTransactionId = body.path("id").asText();
             log.info("Stripe charge succeeded: gatewayTransactionId={}", gatewayTransactionId);
@@ -230,7 +254,10 @@ public class StripePaymentGatewayClient implements PaymentGatewayClient {
         String reason = errorCode.isEmpty() ? (errorType.isEmpty() ? "unknown_error" : errorType) : errorCode;
 
         if (CARD_ERROR_TYPE.equals(errorType)) {
-            String gatewayReference = body.path("error").path("charge").asText(null);
+            // Also covers SCA's authentication_required error code: ADR-0011 leaves
+            // re-authentication out of scope, so it is handled as an ordinary decline
+            // rather than a distinct outcome.
+            String gatewayReference = body.path("error").path("payment_intent").path("id").asText(null);
             log.info("Stripe charge declined: reason={} gatewayReference={}", reason, gatewayReference);
             return new ChargeResult.Declined(reason, gatewayReference);
         }

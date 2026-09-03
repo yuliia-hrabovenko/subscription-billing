@@ -28,7 +28,7 @@ public class CountingPaymentGatewayClient implements PaymentGatewayClient {
     }
 
     @Override
-    public ChargeResult charge(String paymentMethodToken, BigDecimal amount) {
+    public ChargeResult charge(String paymentMethodToken, String providerCustomerId, BigDecimal amount) {
         chargeCount.incrementAndGet();
         if (declineToken.equals(paymentMethodToken)) {
             return new ChargeResult.Declined("card_declined");

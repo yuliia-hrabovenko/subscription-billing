@@ -43,9 +43,7 @@ Structure:
 ## Admin SSO (dev)
 
 Admin sign-in redirects to Auth0, which is SaaS-only — there's no bundled local
-container. Full setup steps (Auth0 app, custom API, Post-Login Action, roles) and a
-troubleshooting table live in
-[`docs/operations/auth0-admin-sso-setup.md`](../docs/operations/auth0-admin-sso-setup.md).
+container.
 Once that's done, set here:
 
 - `VITE_ADMIN_SSO_ISSUER_URI` — your Auth0 tenant, e.g. `https://{yourTenant}.auth0.com`
@@ -57,3 +55,15 @@ Once that's done, set here:
 
 All four are required; `adminOidc.ts`'s fallback values are placeholders, not a working
 default.
+
+## Card collection (dev)
+
+Signup for a paid Plan collects the card directly via Stripe Elements
+(`SignupPage.tsx`/`stripeClient.ts`), never through this app's own backend — see. Set:
+
+- `VITE_STRIPE_PUBLISHABLE_KEY` — a Stripe test-mode publishable key, from the same
+  Stripe test account the backend's `STRIPE_API_KEY` points at (they must match, or
+  SetupIntent confirmation fails)
+
+`stripeClient.ts`'s fallback is a placeholder, not a working default. Without a real key
+set on both frontend and backend, only free-Plan signup works locally.

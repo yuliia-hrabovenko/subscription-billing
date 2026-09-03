@@ -10,6 +10,9 @@ import java.util.UUID;
  *
  * @param subscriptionId     the Subscription being charged
  * @param paymentMethodToken the Customer's gateway-provided card-on-file reference
+ * @param providerCustomerId the gateway's identity for the Customer this card is attached
+ *                           to (e.g. Stripe's {@code cus_...}) -- the gateway requires both
+ *                           this and {@code paymentMethodToken} together to confirm a charge
  * @param amount             the amount to charge, from the Plan's current PriceVersion
  * @param priceVersionId     the PriceVersion {@code amount} was read from — snapshotted onto the created Invoice
  * @param billingPeriod      the Billing Cycle date being charged for — the Subscription's due date at
@@ -25,16 +28,18 @@ import java.util.UUID;
  *                           {@code suspended}) rather than an ordinary renewal or Trial-conversion charge —
  *                           tells the billing job which outcome handling applies
  */
-public record ChargeableSubscription(UUID subscriptionId, String paymentMethodToken, BigDecimal amount,
-                                      UUID priceVersionId, LocalDate billingPeriod, int anchorDayOfMonth,
-                                      boolean dunningRetry) {
+public record ChargeableSubscription(UUID subscriptionId, String paymentMethodToken, String providerCustomerId,
+                                      BigDecimal amount, UUID priceVersionId, LocalDate billingPeriod,
+                                      int anchorDayOfMonth, boolean dunningRetry) {
 
     /**
      * Convenience constructor for an ordinary renewal or Trial-conversion charge —
      * never a Dunning retry.
      */
-    public ChargeableSubscription(UUID subscriptionId, String paymentMethodToken, BigDecimal amount,
-                                   UUID priceVersionId, LocalDate billingPeriod, int anchorDayOfMonth) {
-        this(subscriptionId, paymentMethodToken, amount, priceVersionId, billingPeriod, anchorDayOfMonth, false);
+    public ChargeableSubscription(UUID subscriptionId, String paymentMethodToken, String providerCustomerId,
+                                   BigDecimal amount, UUID priceVersionId, LocalDate billingPeriod,
+                                   int anchorDayOfMonth) {
+        this(subscriptionId, paymentMethodToken, providerCustomerId, amount, priceVersionId, billingPeriod,
+                anchorDayOfMonth, false);
     }
 }
