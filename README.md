@@ -15,28 +15,27 @@ another module's tables directly. All modules share one PostgreSQL database, but
 ownership per module stays explicit.
 
 ```
-                 ┌────────────────────┐
-   Customer ───▶ │                    │
-                 │   Frontend (SPA)   │
-   Admin ──────▶ │                    │
-                 └─────────┬──────────┘
-                           │ HTTPS, /api/v1, JWT bearer
-                           ▼
-   Stripe ─────▶ ┌────────────────────────────────────────────┐
-   (webhook)     │                  api module                │
-                 │   REST controllers · ApiApplication         │
-                 └───┬─────────┬──────────┬──────────┬────────┘
-                     ▼         ▼          ▼          ▼
-              billing-core  billing-job  dunning   invoicing
-                     │         │          │          │
-                     ▼         ▼          ▼          ▼
-                 payments   webhooks  notifications  audit
-                     │                     │
-                     ▼                     ▼
-                  Stripe              Kafka outbox relay
-                     │
-                     ▼
-                PostgreSQL (shared, one schema per module's ownership)
+                       +--------------------+
+         Customer ---> |                    |
+                       |   Frontend (SPA)   |
+         Admin ------> |                    |
+                       +----------+---------+
+                                  | HTTPS, /api/v1, JWT bearer
+                                  |
+                                  v
+                       +--------------------------------------------------------------+
+         Stripe -----> |                          api module                          |
+         (webhook)     |              REST controllers · ApiApplication               |
+                       +--------+---------------+---------------+---------------+-----+
+                                v               v               v               v
+                          billing-core     billing-job       dunning        invoicing
+                                |               |               |               |
+                            payments        webhooks      notifications       audit
+                                |                               |
+                             Stripe                    Kafka outbox relay
+                                |
+                                v
+     PostgreSQL (shared, one schema per module's ownership)
 ```
 
 The daily billing job (`billing-job`) drives the recurring-charge flow: it finds due
@@ -65,12 +64,63 @@ read models, never by reaching into another module's repositories directly.
 | [`webhooks`](backend/webhooks) | Inbound gateway webhook ingestion: signature verification, dedupe, dispatch |
 | [`notifications`](backend/notifications) | Transactional-outbox-backed customer notifications |
 | [`audit`](backend/audit) | Append-only `AuditLogEntry` record of every Subscription state transition |
-| [`api`](backend/api) | REST controllers and the runnable Spring Boot application (`ApiApplication`) |
+| [`api`](backend/api) | REST controllers and the runnable Spring Boot application |
 
 Each module is its own Maven artifact under [`backend/`](backend), aggregated by
 [`backend/pom.xml`](backend/pom.xml). `api` is the only module that wires every other
 module's port implementations together, so it's also where the runnable application and
 the full-stack integration tests live.
+
+## Database design
+
+```
+┌──────────────────┐  1      N  ┌─────────────────────────┐  N      1  ┌───────────────────────┐  1      N  ┌───────────────────┐
+│     Customer     │────────────│       Subscription      │────────────│          Plan         │────────────│    PriceVersion   │
+├──────────────────┤            ├─────────────────────────┤            ├───────────────────────┤            ├───────────────────┤
+│ PK id            │            │ PK id                   │            │ PK id                 │            │ PK id             │
+│    email UK      │            │ FK customer_id          │            │    code UK            │            │ FK plan_id        │
+│    password_hash │            │ FK plan_id              │            │    name               │            │    amount         │
+│    created_at    │            │ FK pending_plan_id      │            │    retired_for_signup │            │    effective_from │
+└───┬─────────┬────┘            │    state                │            └───────────────────────┘            └─────────┬─────────┘
+    ┊         ┊                 │    billing_cycle_anchor │                                                           ┊
+    ┊         ┊                 │    due_date             │                                                           ┊
+    ┊         ┊                 │    version              │                                                           ┊
+    ┊         ┊                 └─────┬──────────────┬────┘                                                           ┊
+    ┊         ┊                       ┊              ┊                                                                ┊
+    ┊         └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┊╌╌╌╌╌┐        ┊                                                                ┊
+    ┊                                 ┊     ┊        ┊                                                                ┊
+    └╌╌╌╌╌╌┐                          ┊     ┊        ┊                                                                ┊
+           ┊                          ┊     ┊        ┊                                                                ┊
+           ┊                          └╌╌╌╌╌╌╌╌╌╌╌╌╌╌┊╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┐                                       ┊
+           ┊                                ┊        ┊                        ┊                                       ┊
+           ┊                                ┊        └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┬╌╌╌╌╌╌╌╌╌╌╌┘
+           ┊                                ┊                                 ┊                           ┊
+           ┊                                ┊                                 ┊                           ┊
+┌──────────▼─────────┐      ┌───────────────▼───────────────┐      ┌──────────▼─────────┐      ┌──────────▼──────────┐
+│   IdempotencyKey   │      │         PaymentMethod         │      │   AuditLogEntry    │      │       Invoice       │
+├────────────────────┤      ├───────────────────────────────┤      ├────────────────────┤      ├─────────────────────┤
+│ PK id              │      │ PK id                         │      │ PK id              │      │ PK id               │
+│    customer_id     │      │    customer_id                │      │    subscription_id │      │    subscription_id  │
+│    operation       │      │    provider                   │      │    actor_type      │      │    price_version_id │
+│    idempotency_key │      │    provider_payment_method_id │      │    old_state       │      │    billing_period   │
+└────────────────────┘      │    last4                      │      │    new_state       │      │    status           │
+                            └───────────────────────────────┘      └────────────────────┘      │    retries_used     │
+                                                                                               └────┬───────────┬────┘
+                                                                                                    │           │
+                                                                                                    └──────┐    └────────────────────────┐
+                                                                                                           │                             │
+                                                                                                           │                             │
+                                                                                                           │                             │
+                                                                                                           │                             │
+                                      ┌─────────────────┐      ┌────────────────────────┐      ┌───────────▼──────────┐        ┌─────────▼────────┐
+                                      │   OutboxEvent   │      │      WebhookEvent      │      │    PaymentAttempt    │        │     Receipt      │
+                                      ├─────────────────┤      ├────────────────────────┤      ├──────────────────────┤        ├──────────────────┤
+                                      │ PK id           │      │ PK id                  │      │ PK id                │        │ PK id            │
+                                      │    event_type   │      │    gateway_event_id UK │      │ FK invoice_id        │        │ FK invoice_id UK │
+                                      │    payload      │      │    received_at         │      │    status            │        │    pdf           │
+                                      │    published_at │      └────────────────────────┘      │    gateway_reference │        └──────────────────┘
+                                      └─────────────────┘                                      └──────────────────────┘
+```
 
 ## Tech stack
 
@@ -107,8 +157,7 @@ service for it. Short version setup: create a free Auth0 Developer org, register
 Action populating namespaced `groups`/`preferred_username` claims — then set
 `ADMIN_SSO_ISSUER_URI`/`ADMIN_SSO_ROLE`/`ADMIN_SSO_CLAIM_NAMESPACE` (backend) and
 `VITE_ADMIN_SSO_ISSUER_URI`/`VITE_ADMIN_SSO_CLIENT_ID`/`VITE_ADMIN_SSO_AUDIENCE`/
-`VITE_ADMIN_SSO_CLAIM_NAMESPACE` (frontend, see
-[`frontend/README.md`](frontend/README.md#admin-sso-dev)) to that org's values.
+`VITE_ADMIN_SSO_CLAIM_NAMESPACE` to that org's values.
 
 Run the daily billing job manually (requires local infra already running):
 
@@ -121,13 +170,42 @@ the Kubernetes CronJob in [`k8s/billing-job-cronjob.yaml`](k8s/billing-job-cronj
 
 ### Configuration
 
-`backend/api/src/main/resources/application.yml` documents every environment variable
-(`DB_HOST`, `KAFKA_BOOTSTRAP_SERVERS`, `JWT_SECRET`, `STRIPE_API_KEY`,
-`ADMIN_SSO_ISSUER_URI`/`ADMIN_SSO_ROLE`, etc.). Every value has a dev-only default so the
-app runs against `docker-compose up` with no extra setup, and every one of those defaults
-must be overridden in a real environment — except `ADMIN_SSO_ISSUER_URI`/`ADMIN_SSO_ROLE`/
-`ADMIN_SSO_CLAIM_NAMESPACE`, which have no working default at all (Auth0 is SaaS-only,
-see above) and must be set even for local dev before the Admin portal will work.
+`backend/api/.env`:
+
+```
+# --- Database (defaults already match docker-compose; only override for a
+# non-default Postgres) ---
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=subscription_billing
+DB_USERNAME=subscription_billing
+DB_PASSWORD=subscription_billing
+
+# --- Kafka / Apicurio schema registry (outbox relay) ---
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+SCHEMA_REGISTRY_URL=http://localhost:8081/apis/registry/v3
+
+# --- Customer JWT signing secret ---
+JWT_SECRET=replace-with-a-long-random-secret
+
+# --- Admin SSO (Auth0) -- SaaS-only, no working default; required even for local dev ---
+ADMIN_SSO_ISSUER_URI=https://{yourTenant}.auth0.com/
+ADMIN_SSO_ROLE=admin
+ADMIN_SSO_CLAIM_NAMESPACE=https://api.subscription-billing.local
+
+# --- Stripe (test mode) ---
+STRIPE_API_KEY=sk_test_your_stripe_test_secret_key
+STRIPE_WEBHOOK_SECRET=whsec_your_stripe_webhook_signing_secret
+
+# --- CORS (defaults already match the local Vite dev server) ---
+CORS_ALLOWED_ORIGINS=http://localhost:5173
+CORS_ALLOWED_METHODS=GET,POST,OPTIONS
+CORS_ALLOWED_HEADERS=Authorization,Content-Type,Idempotency-Key
+
+# --- Misc ---
+SERVER_PORT=8080
+OUTBOX_RELAY_POLL_INTERVAL_MS=5000
+```
 
 ## API
 
@@ -148,6 +226,33 @@ for signup and the gateway webhook receiver.
 | `GET` | `/api/v1/invoices/{id}/receipt` | Download an invoice's PDF receipt |
 | `POST` | `/api/v1/webhooks/gateway` | Inbound Stripe webhook receiver |
 
+## Subscription lifecycle
+
+A Subscription is in exactly one of five states; every transition is appended to
+`audit`'s `AuditLogEntry` log.
+
+```mermaid
+stateDiagram-v2
+    [*] --> trialing : signup with Trial
+    [*] --> active : signup, no Trial
+
+    trialing --> canceled : cancel (nothing charged yet)
+    trialing --> active : Trial conversion charge succeeds
+    trialing --> suspended : Trial conversion charge fails
+
+    active --> pending_cancellation : cancel (paid Plan)
+    active --> canceled : cancel (free Plan) / Dispute
+    active --> suspended : renewal charge fails
+
+    pending_cancellation --> active : undo-cancel
+    pending_cancellation --> canceled : Billing Cycle ends
+
+    suspended --> active : Dunning retry succeeds
+    suspended --> canceled : Dunning exhausted / Dispute
+
+    canceled --> [*]
+```
+
 ## Frontend
 
 A single Vite SPA under [`frontend/`](frontend) serving two separate portals off one
@@ -161,7 +266,7 @@ router (`AppRoutes`/`AdminRoutes`):
 The two portals are independent personas, not roles on one account: each has its own
 login, its own JWT held in its own session store (`sessionStore` vs `adminSessionStore`),
 and neither can act on the other's behalf. Customer login is email/password against this
-service itself; Admin sign-in is SSO via Auth0 (docs/operations/auth0-admin-sso-setup.md)
+service itself; Admin sign-in is SSO via Auth0
 — the SPA redirects to Auth0 directly (Authorization Code + PKCE) and this backend only
 ever validates the
 resulting token, never issues one itself. [`frontend/src/api/client.ts`](frontend/src/api/client.ts)
@@ -184,6 +289,24 @@ frontend/src/
 ├── features/     one folder per screen area (admin/*, invoices, plans, subscription)
 ├── routes/       AppRoutes (customer) + AdminRoutes, route guards
 └── schemas/      Zod schemas for form validation
+```
+
+`frontend/.env`:
+
+```
+# --- API base URL the SPA calls (defaults to http://localhost:8080 if unset) ---
+VITE_API_BASE_URL=http://localhost:8080
+
+# --- Admin SSO (Auth0) -- must point at the same tenant/app as the backend's
+# ADMIN_SSO_* variables above ---
+VITE_ADMIN_SSO_ISSUER_URI=https://{yourTenant}.auth0.com
+VITE_ADMIN_SSO_CLIENT_ID=your-auth0-native-spa-client-id
+VITE_ADMIN_SSO_AUDIENCE=https://api.subscription-billing.local
+VITE_ADMIN_SSO_CLAIM_NAMESPACE=https://api.subscription-billing.local
+
+# --- Stripe (test mode, publishable key only -- safe to ship to the browser, but
+# must match the Stripe account backend's STRIPE_API_KEY points at) ---
+VITE_STRIPE_PUBLISHABLE_KEY=pk_test_your_stripe_test_publishable_key
 ```
 
 Running locally:

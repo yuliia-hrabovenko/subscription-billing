@@ -19,7 +19,7 @@ import java.util.UUID;
  * A subscriber's own billing history: listing a Subscription's Invoices, fetching one
  * individually with its PaymentAttempt history, and downloading its PDF receipt. All
  * three endpoints are bearer + ownership-checked against the target's owning
- * Subscription (ADR-0003); {@link InvoiceService}/{@link ReceiptService} are what turn a
+ * Subscription; {@link InvoiceService}/{@link ReceiptService} are what turn a
  * rejection into {@code 403}, never {@code 404} — see their Javadoc.
  */
 @RestController

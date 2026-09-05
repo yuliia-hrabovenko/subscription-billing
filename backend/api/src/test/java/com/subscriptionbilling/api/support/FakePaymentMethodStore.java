@@ -17,8 +17,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * the equivalent of the old {@code Customer.setPaymentMethodToken} for tests that build a
  * due Subscription fixture without going through the real signup endpoint. {@link
  * FakePaymentMethodOnboardingPort#attach} never receives a gateway Customer id (its real
- * counterpart, {@code PaymentMethodOnboardingPort.attach}, doesn't take one either -- see
- * ADR-0011), so this store synthesizes a deterministic placeholder one, the same way the
+ * counterpart, {@code PaymentMethodOnboardingPort.attach}, doesn't take one either,
+ * so this store synthesizes a deterministic placeholder one, the same way the
  * real adapter would report whatever Stripe Customer it created/reused during onboarding.
  */
 public class FakePaymentMethodStore {

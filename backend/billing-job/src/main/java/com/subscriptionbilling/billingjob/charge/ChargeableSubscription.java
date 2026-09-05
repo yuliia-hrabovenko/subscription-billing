@@ -19,7 +19,7 @@ import java.util.UUID;
  *                           selection time for an ordinary renewal/Trial-conversion, or the original
  *                           Billing Cycle date a Dunning retry is being retried for (never the retry's
  *                           own scheduled date), so it always identifies the one Invoice this charge's
- *                           Payment Attempt belongs to (Invariant 6)
+ *                           Payment Attempt belongs to
  * @param anchorDayOfMonth   the Anchor Date day-of-month this cycle clamps the next one against — the
  *                           Subscription's existing one for a renewal or Dunning retry, or today's for a
  *                           Trial converting now (no Billing Cycle opened yet); source of {@link

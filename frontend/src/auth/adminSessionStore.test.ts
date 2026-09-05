@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { adminSessionStore } from './adminSessionStore';
 
 function fakeJwt(claims: Record<string, unknown>): string {
@@ -12,6 +12,13 @@ function fakeJwt(claims: Record<string, unknown>): string {
 describe('adminSessionStore', () => {
   beforeEach(() => {
     localStorage.clear();
+    // Fixtures below use bare claim names; a developer's local .env may set a real
+    // namespace, which would otherwise make these tests depend on machine-local state.
+    vi.stubEnv('VITE_ADMIN_SSO_CLAIM_NAMESPACE', '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('returns null when nothing is stored', () => {

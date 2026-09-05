@@ -12,7 +12,7 @@ import java.util.UUID;
 /**
  * Read-side use cases behind the Invoice list/get endpoints: resolves ownership (an
  * Invoice has no {@code customerId} of its own — ownership resolves through its
- * Subscription, per ADR-0003) before returning anything, and always resolves the
+ * Subscription) before returning anything, and always resolves the
  * charged amount from the Invoice's snapshotted PriceVersion, never "the Plan's current
  * price" (Invariant 9).
  */

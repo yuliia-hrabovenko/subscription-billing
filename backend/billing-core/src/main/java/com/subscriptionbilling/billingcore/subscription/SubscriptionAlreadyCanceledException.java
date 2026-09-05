@@ -4,7 +4,7 @@ import java.util.UUID;
 
 /**
  * A cancel request targeted a Subscription that's already {@code canceled}. Terminal
- * per Invariant 7 — no transition leaves {@code canceled}, so canceling it again is
+ * — no transition leaves {@code canceled}, so canceling it again is
  * rejected rather than silently treated as a no-op.
  */
 public class SubscriptionAlreadyCanceledException extends RuntimeException {

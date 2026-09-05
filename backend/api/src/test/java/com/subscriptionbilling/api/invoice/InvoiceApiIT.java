@@ -36,8 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * reverse-chronologically with no repeat or skip across a cursor boundary, the get-single
  * endpoint returns the full PaymentAttempt history (one on the happy path, four after
  * Dunning exhausts), a later Plan price change never alters what an already-issued
- * Invoice reports (Invariant 9, the same read-path guarantee {@code
- * ReceiptRenderingServiceTest} proves for the PDF), the receipt-download endpoint serves
+ * Invoice reports, the receipt-download endpoint serves
  * the stored PDF for a paid Invoice and a structured {@code 409} for one still open or
  * failed, and all three endpoints enforce ownership (403 for a different Customer's
  * token, 401 unauthenticated) exactly like {@code SubscriptionApiIT}.

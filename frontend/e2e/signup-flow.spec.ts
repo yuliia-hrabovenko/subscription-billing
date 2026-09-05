@@ -16,7 +16,7 @@ test('browse plans, sign up for the free plan, land on dashboard, then cancel', 
   await expect(page.getByRole('heading', { name: 'Choose a plan' })).toBeVisible();
 
   // The Free plan is always seeded first and needs no payment method, unlike Pro.
-  await page.getByRole('link', { name: 'Sign up' }).first().click();
+  await page.getByRole('link', { name: 'Choose the plan' }).first().click();
   await expect(page.getByRole('heading', { name: 'Sign up' })).toBeVisible();
 
   await page.getByLabel('Email').fill(`e2e-${Date.now()}@example.com`);

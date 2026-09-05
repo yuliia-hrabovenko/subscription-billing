@@ -33,7 +33,7 @@ export function PlansPage() {
           </CardContent>
           <CardActions>
             <Button component={RouterLink} to={`/signup?planId=${plan.id}`} variant="contained">
-              Sign up
+              Choose the plan
             </Button>
           </CardActions>
         </Card>

@@ -23,8 +23,8 @@ public interface PriceVersionRepository extends JpaRepository<PriceVersion, UUID
     /**
      * The single PriceVersion in effect for one Plan as of {@code asOf} — unlike {@link
      * #findByPlanIdInAndEffectiveFromLessThanEqual}, this considers a retired Plan too
-     * (billing a Subscription already on it must still resolve a price, per Invariant
-     * 10), so it cannot reuse {@code PlanCatalogService}'s signup-eligibility path.
+     * (billing a Subscription already on it must still resolve a price,
+     * so it cannot reuse {@code PlanCatalogService}'s signup-eligibility path.
      */
     Optional<PriceVersion> findTopByPlanIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(UUID planId, Instant asOf);
 

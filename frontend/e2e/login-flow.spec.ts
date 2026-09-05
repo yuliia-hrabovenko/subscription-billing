@@ -16,7 +16,7 @@ test('a customer signs up, then logs back in with the same credentials and lands
   const password = 'password123!';
 
   await page.goto('/');
-  await page.getByRole('link', { name: 'Sign up' }).first().click();
+  await page.getByRole('link', { name: 'Choose the plan' }).first().click();
   await page.getByLabel('Email').fill(email);
   await page.getByLabel('Password').fill(password);
   await page.getByRole('button', { name: 'Sign up' }).click();
@@ -39,7 +39,7 @@ test('logging in with the wrong password is rejected', async ({ page }) => {
   const email = `login-wrong-pw-e2e-${Date.now()}@example.com`;
 
   await page.goto('/');
-  await page.getByRole('link', { name: 'Sign up' }).first().click();
+  await page.getByRole('link', { name: 'Choose the plan' }).first().click();
   await page.getByLabel('Email').fill(email);
   await page.getByLabel('Password').fill('password123!');
   await page.getByRole('button', { name: 'Sign up' }).click();

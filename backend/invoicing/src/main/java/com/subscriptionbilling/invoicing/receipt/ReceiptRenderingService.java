@@ -12,7 +12,6 @@ import java.util.UUID;
  * Renders and stores the PDF receipt for an Invoice's transition to {@code paid}. The
  * charged amount and Plan name come from {@link PriceVersionSnapshotPort}, resolved by
  * the Invoice's own snapshotted PriceVersion id rather than the Plan's current price
- * (Invariant 9).
  */
 @Component
 public class ReceiptRenderingService {

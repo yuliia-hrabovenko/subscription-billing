@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Token-driven {@link PaymentGatewayClient} fake wired by {@link PaymentGatewayTestConfig},
  * counting invocations so a test can assert the gateway was actually called at most once
- * across multiple {@code BillingJobRunner#run()} calls — the observable proof ticket #13's
+ * across multiple {@code BillingJobRunner#run()} calls — the observable proof
  * duplicate-run guarantee stops a second gateway call, not only a second database write.
  */
 public class CountingPaymentGatewayClient implements PaymentGatewayClient {

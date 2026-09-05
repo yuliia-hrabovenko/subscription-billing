@@ -5,7 +5,7 @@ import java.util.UUID;
 /**
  * The seam an Invoice read's ownership check is resolved through, so this module never
  * depends on billing-core's Subscription/Customer persistence directly. An Invoice has
- * no {@code customerId} of its own (per ADR-0003, ownership resolves through the
+ * no {@code customerId} of its own (ownership resolves through the
  * Subscription it belongs to).
  */
 public interface SubscriptionOwnershipPort {
